@@ -107,10 +107,21 @@ exec llama-server \
 POD_CONFIG = {
     "name": "hauhau-aggressive-llamaserver",
     "imageName": "ghcr.io/ggml-org/llama.cpp:server-cuda",
-    "gpuTypeIds": ["NVIDIA RTX A6000"],
+    # 48GB cards in priority order — inventory bounces, so list multiples.
+    # A100 80GB at the end as a more-expensive but usually-available fallback.
+    "gpuTypeIds": [
+        "NVIDIA RTX 6000 Ada Generation",
+        "NVIDIA L40S",
+        "NVIDIA RTX A6000",
+        "NVIDIA L40",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A100 80GB PCIe",
+    ],
     "gpuCount": 1,
     "containerDiskInGb": 20,
-    "volumeInGb": 80,
+    # 50 GB volume: 31 GB model + ~10 GB image extracted + headroom.
+    # Larger volumes restrict which machines can be allocated.
+    "volumeInGb": 50,
     "volumeMountPath": "/workspace",
     "ports": ["8000/http"],
     "env": {
@@ -131,9 +142,42 @@ def cmd_launch():
     masked["dockerStartCmd"] = ["bash", "-c", "<startup script>"]
     print(json.dumps(masked, indent=2))
     print()
-    result = _request("POST", f"{REST_BASE}/pods", POD_CONFIG)
-    print(json.dumps(result, indent=2))
-    pod_id = result.get("id")
+    # RunPod inventory churns second-by-second. Two failure modes:
+    #   1. 500 "no instances currently available" on POST.
+    #   2. POST returns a pod_id but the pod sits unallocated (machine: {}).
+    # Both need retry. We accept a pod only if a machine attaches within 75s.
+    pod_id = None
+    for attempt in range(40):
+        try:
+            result = _request("POST", f"{REST_BASE}/pods", POD_CONFIG)
+        except urllib.error.HTTPError as e:
+            if e.code != 500:
+                raise
+            print(f"[attempt {attempt+1}] no inventory; retry in 10s", flush=True)
+            time.sleep(10)
+            continue
+        candidate = result.get("id")
+        print(f"[attempt {attempt+1}] pod {candidate} created; waiting for machine...", flush=True)
+        for _ in range(15):  # 15 * 5s = 75s
+            time.sleep(5)
+            status = _request("GET", f"{REST_BASE}/pods/{candidate}")
+            # Use machineId — RunPod sets this at allocation but often leaves
+            # the embedded `machine` object empty in REST responses.
+            if status.get("machineId"):
+                pod_id = candidate
+                print(f"  -> allocated on machine {status['machineId']} (cost ${status.get('costPerHr')}/hr)", flush=True)
+                break
+        if pod_id:
+            break
+        print(f"  -> never allocated; terminating and retrying", flush=True)
+        try:
+            _request("DELETE", f"{REST_BASE}/pods/{candidate}")
+        except Exception:
+            pass
+        time.sleep(5)
+    if not pod_id:
+        print("Gave up after 40 attempts.", file=sys.stderr)
+        sys.exit(1)
     if pod_id:
         print(f"\nPod created: {pod_id}")
         print(f"Watch with: python deploy_runpod.py wait {pod_id}")
