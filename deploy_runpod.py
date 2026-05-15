@@ -102,7 +102,8 @@ if [ ! -x /workspace/llama.cpp/build/bin/llama-server ]; then
   [ -d llama.cpp ] || git clone --depth 1 https://github.com/ggerganov/llama.cpp.git
   cd llama.cpp
   cmake -B build -DGGML_CUDA=ON -DLLAMA_CURL=ON
-  cmake --build build --config Release -j --target llama-server
+  # -j$(nproc) — bare -j is unlimited parallel and thrashes on small vCPU pods.
+  cmake --build build --config Release -j"$(nproc)" --target llama-server
 else
   echo "llama-server already built."
 fi
