@@ -49,6 +49,7 @@ REST_BASE = "https://rest.runpod.io/v1"
 
 HF_REPO = "HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive"
 GGUF_FILE = f"Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-{QUANT}.gguf"
+MMPROJ_FILE = "mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf"
 
 
 def _request(method: str, url: str, body: dict | None = None) -> dict:
@@ -118,24 +119,31 @@ else
   echo "llama-server already built — skipping compile."
 fi
 
-# Download the GGUF via curl. llama-server's -hf path is unreliable here
-# because its built-in CURL was compiled without OpenSSL detection.
+# Download the GGUF + mmproj via curl. llama-server's -hf path is unreliable
+# because its built-in CURL was compiled without OpenSSL detection on the
+# old base-image build path (the new GHA-built image fixes this).
 MODEL_DIR=/workspace/model
 mkdir -p "$MODEL_DIR"
 MODEL_FILE="$MODEL_DIR/{GGUF_FILE}"
-if [ ! -s "$MODEL_FILE" ]; then
-  echo "Downloading {GGUF_FILE}..."
-  curl -L --fail -H "Authorization: Bearer $HF_TOKEN" \
-    -o "$MODEL_FILE" \
-    "https://huggingface.co/{HF_REPO}/resolve/main/{GGUF_FILE}"
-else
-  echo "Model already present ($(du -h "$MODEL_FILE" | cut -f1))."
-fi
+MMPROJ_PATH="$MODEL_DIR/{MMPROJ_FILE}"
+for SPEC in "{GGUF_FILE}" "{MMPROJ_FILE}"; do
+  DEST="$MODEL_DIR/$SPEC"
+  if [ ! -s "$DEST" ]; then
+    echo "Downloading $SPEC..."
+    curl -L --fail -H "Authorization: Bearer $HF_TOKEN" \
+      -o "$DEST" \
+      "https://huggingface.co/{HF_REPO}/resolve/main/$SPEC"
+  else
+    echo "$SPEC already present ($(du -h "$DEST" | cut -f1))."
+  fi
+done
 
 echo "=== Starting llama-server ==="
 # --jinja: required for HauhauCS chat-template rendering (per model card)
+# --mmproj: enables vision input via the multimodal projector
 /workspace/llama.cpp/build/bin/llama-server \
   --model "$MODEL_FILE" \
+  --mmproj "$MMPROJ_PATH" \
   --alias hauhau-aggressive \
   --host 0.0.0.0 --port 8000 \
   --n-gpu-layers 999 \
