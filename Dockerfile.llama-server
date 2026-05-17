@@ -19,6 +19,16 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
       libcurl4-openssl-dev libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Provide libcuda.so.1 for the linker. On a real GPU host the NVIDIA Container
+# Toolkit bind-mounts the real driver library at runtime, but at build time
+# (especially on a CPU-only CI runner) we have to satisfy the link step with
+# the stub shipped in the devel image. Symlink it under the standard search
+# path and re-run ldconfig.
+RUN ln -sf /usr/local/cuda/lib64/stubs/libcuda.so \
+           /usr/local/cuda/lib64/stubs/libcuda.so.1 \
+ && echo /usr/local/cuda/lib64/stubs > /etc/ld.so.conf.d/cuda-stubs.conf \
+ && ldconfig
+
 WORKDIR /src
 RUN git clone --depth 1 --branch "${LLAMA_CPP_REF}" \
       https://github.com/ggml-org/llama.cpp.git
