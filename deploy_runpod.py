@@ -74,27 +74,56 @@ def _request(method: str, url: str, body: dict | None = None) -> dict:
         raise
 
 
-# llama-server's -hf flag pulls the GGUF straight from HuggingFace (the binary
-# is built with CURL support). LLAMA_CACHE pins downloads to the volume so a
-# pod restart doesn't re-download.
+# Build llama.cpp from source on nvidia/cuda base. Caches the build on
+# /workspace so subsequent pod boots skip the compile entirely (~5 min once,
+# ~30s thereafter). llama-server downloads the GGUF via -hf at startup.
 STARTUP_SCRIPT = rf"""
-set -e
 exec > >(tee -a /workspace/startup.log) 2>&1
-echo "=== Hauhau Aggressive llama-server (prebuilt image) ==="
+set -u
+echo "=== Hauhau Aggressive llama-server (source build) ==="
 date
+
+# sshd for debugging — PUBLIC_KEY auto-injected by RunPod
+if [ ! -f /workspace/.ssh-ready ]; then
+  apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    openssh-server git build-essential cmake curl libcurl4-openssl-dev
+  mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh
+  [ -n "${{PUBLIC_KEY:-}}" ] && echo "$PUBLIC_KEY" > /root/.ssh/authorized_keys
+  sed -i "s/#\?PermitRootLogin .*/PermitRootLogin prohibit-password/" /etc/ssh/sshd_config
+  sed -i "s/#\?PasswordAuthentication .*/PasswordAuthentication no/" /etc/ssh/sshd_config
+  touch /workspace/.ssh-ready
+fi
+/usr/sbin/sshd -e &
 
 if [ -z "${{HF_TOKEN:-}}" ]; then
   echo "ERROR: HF_TOKEN not set"
   exec tail -f /dev/null
 fi
 
+# Build llama.cpp with CUDA (cached on /workspace)
+if [ ! -x /workspace/llama.cpp/build/bin/llama-server ]; then
+  echo "Building llama.cpp from source..."
+  cd /workspace
+  [ -d llama.cpp ] || git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
+  cd llama.cpp
+  cmake -B build -DGGML_CUDA=ON -DLLAMA_CURL=ON
+  # nproc returns host CPUs (often 128) regardless of the container's vCPU
+  # quota, which would over-parallelize and thrash. Read the cgroup quota.
+  JOBS=$(awk '{{q=$1; p=$2; if (q=="max") q=p; printf "%d\n", (q+p-1)/p}}' \
+    /sys/fs/cgroup/cpu.max 2>/dev/null) || JOBS=8
+  echo "Building with -j $JOBS"
+  cmake --build build --config Release -j "$JOBS" --target llama-server
+else
+  echo "llama-server already built — skipping compile."
+fi
+
 export LLAMA_CACHE=/workspace/llama-cache
 mkdir -p "$LLAMA_CACHE"
 
 echo "=== Starting llama-server ==="
-exec llama-server \
+exec /workspace/llama.cpp/build/bin/llama-server \
   -hf {HF_REPO}:{GGUF_FILE} \
-  --hf-token "$HF_TOKEN" \
   --alias hauhau-aggressive \
   --host 0.0.0.0 --port 8000 \
   --n-gpu-layers 999 \
@@ -106,7 +135,7 @@ exec llama-server \
 
 POD_CONFIG = {
     "name": "hauhau-aggressive-llamaserver",
-    "imageName": "ghcr.io/ggml-org/llama.cpp:server-cuda",
+    "imageName": "nvidia/cuda:12.5.1-cudnn-devel-ubuntu22.04",
     # 48GB cards in priority order — inventory bounces, so list multiples.
     # A100 80GB at the end as a more-expensive but usually-available fallback.
     "gpuTypeIds": [
@@ -123,7 +152,7 @@ POD_CONFIG = {
     # Larger volumes restrict which machines can be allocated.
     "volumeInGb": 50,
     "volumeMountPath": "/workspace",
-    "ports": ["8000/http"],
+    "ports": ["8000/http", "22/tcp"],
     "env": {
         "HF_TOKEN": HF_TOKEN or "",
     },
