@@ -118,13 +118,24 @@ else
   echo "llama-server already built — skipping compile."
 fi
 
-export LLAMA_CACHE=/workspace/llama-cache
-mkdir -p "$LLAMA_CACHE"
+# Download the GGUF via curl. llama-server's -hf path is unreliable here
+# because its built-in CURL was compiled without OpenSSL detection.
+MODEL_DIR=/workspace/model
+mkdir -p "$MODEL_DIR"
+MODEL_FILE="$MODEL_DIR/{GGUF_FILE}"
+if [ ! -s "$MODEL_FILE" ]; then
+  echo "Downloading {GGUF_FILE}..."
+  curl -L --fail -H "Authorization: Bearer $HF_TOKEN" \
+    -o "$MODEL_FILE" \
+    "https://huggingface.co/{HF_REPO}/resolve/main/{GGUF_FILE}"
+else
+  echo "Model already present ($(du -h "$MODEL_FILE" | cut -f1))."
+fi
 
 echo "=== Starting llama-server ==="
 # --jinja: required for HauhauCS chat-template rendering (per model card)
 /workspace/llama.cpp/build/bin/llama-server \
-  -hf {HF_REPO}:{GGUF_FILE} \
+  --model "$MODEL_FILE" \
   --alias hauhau-aggressive \
   --host 0.0.0.0 --port 8000 \
   --n-gpu-layers 999 \

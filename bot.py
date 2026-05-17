@@ -168,6 +168,7 @@ async def on_message(message: discord.Message):
 
     reply_msg = await message.reply("…")
     full = ""
+    reasoning_buf = ""
     last_edit = 0.0
 
     try:
@@ -179,13 +180,22 @@ async def on_message(message: discord.Message):
                 max_tokens=MAX_TOKENS,
             )
             async for chunk in stream:
-                delta = (chunk.choices[0].delta.content or "") if chunk.choices else ""
-                if not delta:
+                if not chunk.choices:
                     continue
-                full += delta
+                delta_obj = chunk.choices[0].delta
+                # Qwen3.6 in thinking mode streams to reasoning_content first,
+                # then content. Show both but mark reasoning as italic preview.
+                content_delta = delta_obj.content or ""
+                reasoning_delta = getattr(delta_obj, "reasoning_content", None) or ""
+                if reasoning_delta:
+                    reasoning_buf += reasoning_delta
+                if content_delta:
+                    full += content_delta
+                if not (content_delta or reasoning_delta):
+                    continue
                 now = time.time()
                 if now - last_edit >= 1.5:
-                    preview = full[-1900:] + "▌"
+                    preview = (full or f"_thinking..._\n> {reasoning_buf[-1700:]}")[-1900:] + "▌"
                     try:
                         await reply_msg.edit(content=preview)
                     except discord.HTTPException:
@@ -195,13 +205,16 @@ async def on_message(message: discord.Message):
         await reply_msg.edit(content=f"⚠️ backend error: `{type(e).__name__}: {e}`")
         return
 
-    chunks = chunk_for_discord(full)
+    # If the model only produced reasoning (e.g. truncated mid-think), surface
+    # it rather than posting "(empty response)".
+    final_text = full or reasoning_buf or "(no response)"
+    chunks = chunk_for_discord(final_text)
     await reply_msg.edit(content=chunks[0])
     for extra in chunks[1:]:
         await message.channel.send(extra)
 
     append_message(DB, message.author.id, "user", content)
-    append_message(DB, message.author.id, "assistant", full)
+    append_message(DB, message.author.id, "assistant", final_text)
 
 
 def _slash_authorized(user_id: int) -> bool:
