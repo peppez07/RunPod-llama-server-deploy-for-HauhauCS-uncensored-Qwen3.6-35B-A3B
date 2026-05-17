@@ -22,7 +22,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    timeout-minutes: 90
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
 
