@@ -122,14 +122,18 @@ export LLAMA_CACHE=/workspace/llama-cache
 mkdir -p "$LLAMA_CACHE"
 
 echo "=== Starting llama-server ==="
-exec /workspace/llama.cpp/build/bin/llama-server \
+# --jinja: required for HauhauCS chat-template rendering (per model card)
+/workspace/llama.cpp/build/bin/llama-server \
   -hf {HF_REPO}:{GGUF_FILE} \
   --alias hauhau-aggressive \
   --host 0.0.0.0 --port 8000 \
   --n-gpu-layers 999 \
-  --ctx-size 32768 \
+  --ctx-size 65536 \
   --parallel 4 \
-  --metrics
+  --jinja \
+  --metrics 2>&1 | tee -a /workspace/llama-server.log
+echo "=== llama-server exited with code $? — parking container for SSH debug ==="
+exec tail -f /dev/null
 """
 
 
