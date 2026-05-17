@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1.7
+# Build llama-server (llama.cpp) with CUDA support. Multi-stage so the runtime
+# image only carries the binary + shared libs needed at execution time.
+#
+# Built and pushed by .github/workflows/build-llama-server-image.yml on every
+# push to main. Tagged :latest and with the git SHA.
+
+ARG CUDA_VERSION=12.5.1
+ARG UBUNTU_VERSION=22.04
+
+# ---- builder ---------------------------------------------------------------
+FROM nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu${UBUNTU_VERSION} AS builder
+
+ARG LLAMA_CPP_REF=master
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+      git build-essential cmake ca-certificates \
+      libcurl4-openssl-dev libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN git clone --depth 1 --branch "${LLAMA_CPP_REF}" \
+      https://github.com/ggml-org/llama.cpp.git
+
+WORKDIR /src/llama.cpp
+RUN cmake -B build -DGGML_CUDA=ON -DLLAMA_CURL=ON \
+ && cmake --build build --config Release -j"$(nproc)" --target llama-server
+
+# ---- runtime ---------------------------------------------------------------
+FROM nvidia/cuda:${CUDA_VERSION}-cudnn-runtime-ubuntu${UBUNTU_VERSION}
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+      curl ca-certificates libcurl4 libgomp1 openssl libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /src/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
+COPY --from=builder /src/llama.cpp/build/bin/lib*.so /usr/local/lib/
+RUN ldconfig
+
+# No ENTRYPOINT — RunPod's dockerStartCmd replaces CMD cleanly, and a bash
+# wrapper can still pre-flight (download model, etc.) before exec'ing the
+# binary. The default CMD just prints help so a bare `docker run` is harmless.
+CMD ["llama-server", "--help"]
