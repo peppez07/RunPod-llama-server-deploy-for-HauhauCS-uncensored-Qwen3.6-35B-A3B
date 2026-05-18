@@ -1,79 +1,110 @@
 # uncensored
 
 Deploy [`HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive`](https://huggingface.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive)
-(or any GGUF model) on a RunPod GPU pod, behind an OpenAI-compatible HTTP API.
-Boots multimodal-ready out of the box.
+(or any GGUF model) to a RunPod GPU pod behind an OpenAI-compatible HTTP API.
+Multimodal-ready out of the box.
 
 ```
-                ┌─────────────────────────────────┐
-                │ Your browser / OpenWebUI / API  │
-                └────────────┬────────────────────┘
-                             │ https
-                             ▼
+              ┌──────────────────────────────────┐
+              │ Your browser, OpenWebUI, API,    │
+              │ or anything that talks OpenAI v1 │
+              └────────────────┬─────────────────┘
+                               │ https
+                               ▼
             https://<podId>-8000.proxy.runpod.net/v1
-                             │
-                             ▼
-       ┌─────────────────────────────────────────┐
-       │ RunPod pod · 48 GB VRAM · llama-server  │
-       │ · model + mmproj on /workspace          │
-       └─────────────────────────────────────────┘
+                               │
+                               ▼
+       ┌───────────────────────────────────────────┐
+       │ RunPod pod · 48 GB VRAM · llama-server    │
+       │   · model + mmproj on /workspace          │
+       └───────────────────────────────────────────┘
 ```
+
+## Quick start (~9 min)
+
+```bash
+git clone https://github.com/bobby-beckmann/uncensored.git
+cd uncensored
+cp .env.example .env             # fill in RUNPOD_API_KEY and HF_TOKEN
+python3 deploy_runpod.py launch  # prints a pod id
+python3 deploy_runpod.py wait <pod_id>
+```
+
+When `wait` reports `READY`, open `https://<pod_id>-8000.proxy.runpod.net/`
+in a browser for the built-in chat UI (with sampling knobs in the sidebar
+and drag-and-drop image input), or point any OpenAI client at
+`https://<pod_id>-8000.proxy.runpod.net/v1`.
+
+```bash
+python3 deploy_runpod.py terminate <pod_id>   # stop the meter
+```
+
+Cost is roughly **$0.77/hr** on the default GPU (RTX 6000 Ada, 48 GB).
+The `/workspace` volume is destroyed with the pod, so a fresh launch
+re-downloads the model (~6 min over 80 MB/s).
 
 ## What you get on the pod
 
-- `llama-server` from llama.cpp, built with CUDA
-- Q6_K_P quant by default (~31 GB; override with `QUANT=`)
-- `--jinja` chat template (required by the model card)
-- `--mmproj` loaded → vision input works
-- Built-in chat UI at `/`, OpenAI-compatible API at `/v1`
+- `llama-server` from llama.cpp, built with CUDA.
+- `Q6_K_P` quant by default (~31 GB on disk). Override: `QUANT=Q4_K_M python3 deploy_runpod.py launch`.
+- `--jinja` chat template (required by this model card).
+- `--mmproj` loaded so vision input works.
+- Built-in chat UI at `/`, OpenAI-compatible API at `/v1`.
+- `--ctx-size 65536` split across `--parallel 4` slots (16 K context per concurrent user; bump in `deploy_runpod.py` if you need more).
 
-## One-time setup
+## How it boots fast
 
-1. **Accounts.** [RunPod](https://www.runpod.io/) account with credit; a [Hugging Face](https://huggingface.co/) token (any read-scope token is fine).
-2. **Clone and configure.**
-   ```bash
-   git clone https://github.com/bobby-beckmann/uncensored.git
-   cd uncensored
-   cp .env.example .env
-   # fill in RUNPOD_API_KEY and HF_TOKEN
-   ```
-3. **(Optional) Use the prebuilt image.** This repo's GitHub Actions builds a CUDA-ready `llama-server` image and pushes it to `ghcr.io/bobby-beckmann/llama-server-cuda:latest`. Once the package is public, future pods can skip the in-pod compile. (The current `deploy_runpod.py` builds from source on boot — slower first run but no auth needed.)
+By default the pod pulls a **prebuilt CUDA image** from this repo's
+GitHub Container Registry:
+[`ghcr.io/bobby-beckmann/llama-server-cuda:latest`](https://github.com/bobby-beckmann/uncensored/pkgs/container/llama-server-cuda).
 
-## Launch a pod
+The image is rebuilt automatically on every push to `main` via
+[`.github/workflows/build-llama-server-image.yml`](.github/workflows/build-llama-server-image.yml).
+It bakes only the binary — no model — so the same image works for any
+GGUF you want to swap in.
 
-```bash
-python3 deploy_runpod.py launch
-# Pod allocated: xxxxxxxxx  cost $0.77/hr
-# Endpoint will be: https://xxxxxxxxx-8000.proxy.runpod.net
-
-python3 deploy_runpod.py wait xxxxxxxxx
-# polls until /v1/models returns 200 (~10–25 min cold boot)
-```
-
-Open `https://xxxxxxxxx-8000.proxy.runpod.net/` to chat in the built-in UI, or point any OpenAI client at `https://xxxxxxxxx-8000.proxy.runpod.net/v1`.
-
-## Stop a pod
+If you need a fresh build (testing a custom llama.cpp branch, recovering
+from a broken image, etc.), fall back to compiling on the pod:
 
 ```bash
-python3 deploy_runpod.py terminate xxxxxxxxx
+BUILD_FROM_SOURCE=1 python3 deploy_runpod.py launch
 ```
 
-Billing stops immediately. The `/workspace` volume is destroyed with the pod, so next launch re-downloads the model (~6 min over 80 MB/s).
+This boots `nvidia/cuda:12.5.1-cudnn-devel-ubuntu22.04`, clones llama.cpp,
+compiles it on the pod (~25 min cold), then runs. SSH on port 22 is
+enabled in this mode for debugging.
 
-## Common changes
+## Forking / using your own model
 
-- **Different quant.** `QUANT=Q4_K_M python3 deploy_runpod.py launch` (saves ~10 GB VRAM at lower quality).
-- **Different model.** Edit `HF_REPO`, `GGUF_FILE`, and `MMPROJ_FILE` near the top of `deploy_runpod.py`. The deploy script is generic — only the file names are model-specific.
-- **Cheaper / faster GPU.** Edit `gpuTypeIds` in `POD_CONFIG`. Default tries RTX 6000 Ada → L40S → A6000 → L40 → A100 80GB in priority order. Inventory fluctuates; the script has a built-in retry loop that re-submits until allocation succeeds.
-- **Larger context.** Bump `--ctx-size` in the startup script (currently 65536, model supports 262144).
+The script is generic — only three things are model-specific:
+
+```python
+# deploy_runpod.py
+HF_REPO      = "HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive"
+GGUF_FILE    = f"Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-{QUANT}.gguf"
+MMPROJ_FILE  = "mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf"
+```
+
+Swap those, optionally drop `--mmproj` from the startup script if the
+model is text-only, and you're done. The same image still applies.
+
+If you fork this repo and want your own GHCR image:
+
+1. Push to your fork — the workflow runs automatically on `main`.
+2. After the first run, go to your packages page and flip
+   `llama-server-cuda` to **public** (Package settings → Danger zone →
+   Change visibility).
+3. Either point `deploy_runpod.py` at your image (edit `PREBUILT_IMAGE`)
+   or set `LLAMA_SERVER_IMAGE=ghcr.io/<you>/llama-server-cuda:latest`.
 
 ## Other clients
 
-The model alias is `hauhau-aggressive`. Any OpenAI-compatible client works:
-
 ```python
 from openai import OpenAI
-client = OpenAI(base_url="https://<podId>-8000.proxy.runpod.net/v1", api_key="not-needed")
+client = OpenAI(
+    base_url="https://<pod_id>-8000.proxy.runpod.net/v1",
+    api_key="not-needed",
+)
 r = client.chat.completions.create(
     model="hauhau-aggressive",
     messages=[{"role": "user", "content": "hi"}],
@@ -81,26 +112,47 @@ r = client.chat.completions.create(
 print(r.choices[0].message.content)
 ```
 
-For [Open WebUI](https://github.com/open-webui/open-webui) on your laptop:
+[Open WebUI](https://github.com/open-webui/open-webui) on your laptop:
 
 ```bash
 docker run -d --name openwebui -p 3000:8080 \
-  -e OPENAI_API_BASE_URL=https://<podId>-8000.proxy.runpod.net/v1 \
+  -e OPENAI_API_BASE_URL=https://<pod_id>-8000.proxy.runpod.net/v1 \
   -e OPENAI_API_KEY=anything \
   -v openwebui:/app/backend/data \
   ghcr.io/open-webui/open-webui:main
 ```
 
+## Knobs
+
+| Env var               | Default                                            | What it does                                          |
+|-----------------------|----------------------------------------------------|-------------------------------------------------------|
+| `RUNPOD_API_KEY`      | (required)                                         | Auth for the RunPod REST API.                         |
+| `HF_TOKEN`            | (required)                                         | Hugging Face read token; used by the pod to download. |
+| `QUANT`               | `Q6_K_P`                                           | Quant tier; `Q4_K_M`, `Q8_K_P`, etc. also valid.      |
+| `BUILD_FROM_SOURCE`   | unset                                              | Set to `1` to compile llama.cpp on the pod instead.   |
+| `LLAMA_SERVER_IMAGE`  | `ghcr.io/bobby-beckmann/llama-server-cuda:latest`  | Override the prebuilt image (e.g. to your fork).      |
+
 ## Quirks worth knowing
 
-- **Thinking mode is on by default.** Responses stream the model's reasoning to `delta.reasoning_content`, then the final answer to `delta.content`. If you only consume `content` you might see empty deltas for the first second or two. To disable, prepend `/no_think` to your prompt or pass `enable_thinking=false` via your chat template extension.
-- **`-hf` direct-download is broken on the source-build path.** llama.cpp's embedded CURL was compiled without OpenSSL detection, so `llama-server -hf user/repo:file` fails with `HTTPS is not supported`. The deploy script works around this with `curl` for the initial download. The prebuilt GHCR image installs `libssl-dev`, so once you switch to it `-hf` works.
-- **Image URLs in chat must be base64 data URLs**, *not* HTTPS links, for the same reason as above. The built-in chat UI does this transparently when you drag in an image.
-- **The first build is slow.** ~25 min in-pod to compile llama.cpp from source. The artifacts cache to `/workspace` so a *restart* of the same pod is fast — but a *new* pod (different volume) rebuilds. Use the prebuilt GHCR image to skip this.
+- **Thinking mode is on by default.** Responses stream the model's
+  reasoning to `delta.reasoning_content`, then the final answer to
+  `delta.content`. A client that only consumes `content` will see empty
+  deltas for a second or two. Prepend `/no_think` to disable per-turn,
+  or pass `enable_thinking=false` via the chat template extension.
+- **Image input.** The built-in UI accepts drag-and-drop and encodes as
+  a base64 data URL. HTTPS image URLs work only on the prebuilt-image
+  path (llama.cpp's embedded CURL needs OpenSSL, which the prebuilt
+  Dockerfile installs but the source-build apt block doesn't).
+- **Inventory bounces.** RunPod can be momentarily out of any given GPU.
+  `deploy_runpod.py launch` has a built-in retry loop that submits
+  every 10 s until a machine sticks, falling through the priority list
+  RTX 6000 Ada → L40S → A6000 → L40 → A100.
 
-## Files
+## Layout
 
-- `deploy_runpod.py` — pod lifecycle: `launch`, `status`, `wait`, `terminate`
-- `Dockerfile.llama-server` — multi-stage CUDA build of llama-server
-- `.github/workflows/build-llama-server-image.yml` — builds + pushes the image on every commit to main
-- `.env.example` — template; copy to `.env` and fill in
+| Path                                              | What it is                                                |
+|---------------------------------------------------|-----------------------------------------------------------|
+| `deploy_runpod.py`                                | Pod lifecycle: `launch`, `status`, `wait`, `terminate`.   |
+| `Dockerfile.llama-server`                         | Multi-stage CUDA build of `llama-server`.                 |
+| `.github/workflows/build-llama-server-image.yml`  | Builds and pushes the image on every commit to `main`.    |
+| `.env.example`                                    | Template — copy to `.env` and fill in.                    |

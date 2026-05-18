@@ -40,6 +40,14 @@ ENV = load_env()
 RUNPOD_API_KEY = ENV.get("RUNPOD_API_KEY") or os.environ.get("RUNPOD_API_KEY")
 HF_TOKEN = ENV.get("HF_TOKEN") or os.environ.get("HF_TOKEN")
 QUANT = os.environ.get("QUANT", "Q6_K_P")
+# Default: pull the prebuilt llama-server image from GHCR (~9 min cold boot).
+# Set BUILD_FROM_SOURCE=1 to fall back to compiling llama.cpp on the pod
+# (~25 min, but useful for testing custom branches or if the image is broken).
+USE_SOURCE_BUILD = os.environ.get("BUILD_FROM_SOURCE", "").lower() in ("1", "true", "yes")
+PREBUILT_IMAGE = os.environ.get(
+    "LLAMA_SERVER_IMAGE",
+    "ghcr.io/bobby-beckmann/llama-server-cuda:latest",
+)
 
 if not RUNPOD_API_KEY:
     print("ERROR: RUNPOD_API_KEY not in .env or env", file=sys.stderr)
@@ -75,13 +83,58 @@ def _request(method: str, url: str, body: dict | None = None) -> dict:
         raise
 
 
-# Build llama.cpp from source on nvidia/cuda base. Caches the build on
-# /workspace so subsequent pod boots skip the compile entirely (~5 min once,
-# ~30s thereafter). llama-server downloads the GGUF via -hf at startup.
-STARTUP_SCRIPT = rf"""
+# --- Shared model-download block, used by both startup variants -------------
+MODEL_DOWNLOAD_BLOCK = rf"""
+MODEL_DIR=/workspace/model
+mkdir -p "$MODEL_DIR"
+MODEL_FILE="$MODEL_DIR/{GGUF_FILE}"
+MMPROJ_PATH="$MODEL_DIR/{MMPROJ_FILE}"
+for SPEC in "{GGUF_FILE}" "{MMPROJ_FILE}"; do
+  DEST="$MODEL_DIR/$SPEC"
+  if [ ! -s "$DEST" ]; then
+    echo "Downloading $SPEC..."
+    curl -L --fail -H "Authorization: Bearer $HF_TOKEN" \
+      -o "$DEST" \
+      "https://huggingface.co/{HF_REPO}/resolve/main/$SPEC"
+  else
+    echo "$SPEC already present ($(du -h "$DEST" | cut -f1))."
+  fi
+done
+"""
+
+LLAMA_SERVER_ARGS = r"""\
+  --model "$MODEL_FILE" \
+  --mmproj "$MMPROJ_PATH" \
+  --alias hauhau-aggressive \
+  --host 0.0.0.0 --port 8000 \
+  --n-gpu-layers 999 \
+  --ctx-size 65536 \
+  --parallel 4 \
+  --jinja \
+  --metrics"""
+
+# --- Default path: prebuilt image (ghcr.io/.../llama-server-cuda:latest) ----
+# Cold boot ~9 min: image pull (~1 min) + model download (~6 min) + load.
+PREBUILT_STARTUP_SCRIPT = rf"""
+set -u
+echo "=== llama-server (prebuilt image) ==="
+date
+if [ -z "${{HF_TOKEN:-}}" ]; then
+  echo "ERROR: HF_TOKEN not set"; exec tail -f /dev/null
+fi
+{MODEL_DOWNLOAD_BLOCK}
+echo "=== Starting llama-server ==="
+exec /usr/local/bin/llama-server {LLAMA_SERVER_ARGS}
+"""
+
+# --- Escape hatch: build from source on nvidia/cuda base --------------------
+# Slower (~25 min cold boot for the compile). Useful for testing custom llama.cpp
+# branches, custom build flags, or recovering when the prebuilt image is broken.
+# Set BUILD_FROM_SOURCE=1 to use this. Includes sshd for build-time debugging.
+SOURCE_STARTUP_SCRIPT = rf"""
 exec > >(tee -a /workspace/startup.log) 2>&1
 set -u
-echo "=== Hauhau Aggressive llama-server (source build) ==="
+echo "=== llama-server (source build) ==="
 date
 
 # sshd for debugging — PUBLIC_KEY auto-injected by RunPod
@@ -119,48 +172,28 @@ else
   echo "llama-server already built — skipping compile."
 fi
 
-# Download the GGUF + mmproj via curl. llama-server's -hf path is unreliable
-# because its built-in CURL was compiled without OpenSSL detection on the
-# old base-image build path (the new GHA-built image fixes this).
-MODEL_DIR=/workspace/model
-mkdir -p "$MODEL_DIR"
-MODEL_FILE="$MODEL_DIR/{GGUF_FILE}"
-MMPROJ_PATH="$MODEL_DIR/{MMPROJ_FILE}"
-for SPEC in "{GGUF_FILE}" "{MMPROJ_FILE}"; do
-  DEST="$MODEL_DIR/$SPEC"
-  if [ ! -s "$DEST" ]; then
-    echo "Downloading $SPEC..."
-    curl -L --fail -H "Authorization: Bearer $HF_TOKEN" \
-      -o "$DEST" \
-      "https://huggingface.co/{HF_REPO}/resolve/main/$SPEC"
-  else
-    echo "$SPEC already present ($(du -h "$DEST" | cut -f1))."
-  fi
-done
-
+{MODEL_DOWNLOAD_BLOCK}
 echo "=== Starting llama-server ==="
-# --jinja: required for HauhauCS chat-template rendering (per model card)
-# --mmproj: enables vision input via the multimodal projector
-/workspace/llama.cpp/build/bin/llama-server \
-  --model "$MODEL_FILE" \
-  --mmproj "$MMPROJ_PATH" \
-  --alias hauhau-aggressive \
-  --host 0.0.0.0 --port 8000 \
-  --n-gpu-layers 999 \
-  --ctx-size 65536 \
-  --parallel 4 \
-  --jinja \
-  --metrics 2>&1 | tee -a /workspace/llama-server.log
+/workspace/llama.cpp/build/bin/llama-server {LLAMA_SERVER_ARGS} 2>&1 | tee -a /workspace/llama-server.log
 echo "=== llama-server exited with code $? — parking container for SSH debug ==="
 exec tail -f /dev/null
 """
 
 
+if USE_SOURCE_BUILD:
+    _image = "nvidia/cuda:12.5.1-cudnn-devel-ubuntu22.04"
+    _script = SOURCE_STARTUP_SCRIPT
+    _ports = ["8000/http", "22/tcp"]  # sshd in the source-build script
+else:
+    _image = PREBUILT_IMAGE
+    _script = PREBUILT_STARTUP_SCRIPT
+    _ports = ["8000/http"]  # no sshd in the slim prebuilt image
+
 POD_CONFIG = {
     "name": "hauhau-aggressive-llamaserver",
-    "imageName": "nvidia/cuda:12.5.1-cudnn-devel-ubuntu22.04",
-    # 48GB cards in priority order — inventory bounces, so list multiples.
-    # A100 80GB at the end as a more-expensive but usually-available fallback.
+    "imageName": _image,
+    # 48 GB cards in priority order — inventory bounces, so list multiples.
+    # A100 80 GB at the end as a more-expensive but usually-available fallback.
     "gpuTypeIds": [
         "NVIDIA RTX 6000 Ada Generation",
         "NVIDIA L40S",
@@ -175,11 +208,11 @@ POD_CONFIG = {
     # Larger volumes restrict which machines can be allocated.
     "volumeInGb": 50,
     "volumeMountPath": "/workspace",
-    "ports": ["8000/http", "22/tcp"],
+    "ports": _ports,
     "env": {
         "HF_TOKEN": HF_TOKEN or "",
     },
-    "dockerStartCmd": ["bash", "-c", STARTUP_SCRIPT],
+    "dockerStartCmd": ["bash", "-c", _script],
 }
 
 
@@ -187,6 +220,8 @@ def cmd_launch():
     if not HF_TOKEN:
         print("ERROR: HF_TOKEN not set in .env", file=sys.stderr)
         sys.exit(1)
+    mode = "source build" if USE_SOURCE_BUILD else "prebuilt image"
+    print(f"Mode:  {mode}  (BUILD_FROM_SOURCE={USE_SOURCE_BUILD})")
     print(f"Quant: {QUANT}  ->  {GGUF_FILE}")
     print(f"Image: {POD_CONFIG['imageName']}")
     print(f"Creating pod '{POD_CONFIG['name']}':")
