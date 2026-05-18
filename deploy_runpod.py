@@ -55,9 +55,23 @@ if not RUNPOD_API_KEY:
 
 REST_BASE = "https://rest.runpod.io/v1"
 
-HF_REPO = "HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive"
-GGUF_FILE = f"Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-{QUANT}.gguf"
-MMPROJ_FILE = "mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf"
+# Model selection — every field is env-overridable so swapping models is a
+# one-liner. MMPROJ_FILE can be set to "" for text-only models (skips the
+# extra download and the --mmproj flag).
+HF_REPO = os.environ.get(
+    "HF_REPO",
+    "HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive",
+)
+GGUF_FILE = os.environ.get(
+    "GGUF_FILE",
+    f"Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-{QUANT}.gguf",
+)
+MMPROJ_FILE = os.environ.get(
+    "MMPROJ_FILE",
+    "mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf",
+)
+MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "hauhau-aggressive")
+POD_NAME = os.environ.get("POD_NAME", f"{MODEL_ALIAS}-llamaserver")
 
 
 def _request(method: str, url: str, body: dict | None = None) -> dict:
@@ -84,12 +98,16 @@ def _request(method: str, url: str, body: dict | None = None) -> dict:
 
 
 # --- Shared model-download block, used by both startup variants -------------
+# Iterates the FILES list — just GGUF when MMPROJ_FILE is empty, both otherwise.
+_download_files = [GGUF_FILE] + ([MMPROJ_FILE] if MMPROJ_FILE else [])
+_files_bash_array = " ".join(f'"{f}"' for f in _download_files)
+_mmproj_arg = f'--mmproj "/workspace/model/{MMPROJ_FILE}" ' if MMPROJ_FILE else ""
+
 MODEL_DOWNLOAD_BLOCK = rf"""
 MODEL_DIR=/workspace/model
 mkdir -p "$MODEL_DIR"
 MODEL_FILE="$MODEL_DIR/{GGUF_FILE}"
-MMPROJ_PATH="$MODEL_DIR/{MMPROJ_FILE}"
-for SPEC in "{GGUF_FILE}" "{MMPROJ_FILE}"; do
+for SPEC in {_files_bash_array}; do
   DEST="$MODEL_DIR/$SPEC"
   if [ ! -s "$DEST" ]; then
     echo "Downloading $SPEC..."
@@ -102,10 +120,10 @@ for SPEC in "{GGUF_FILE}" "{MMPROJ_FILE}"; do
 done
 """
 
-LLAMA_SERVER_ARGS = r"""\
+LLAMA_SERVER_ARGS = rf"""\
   --model "$MODEL_FILE" \
-  --mmproj "$MMPROJ_PATH" \
-  --alias hauhau-aggressive \
+  {_mmproj_arg}\
+  --alias {MODEL_ALIAS} \
   --host 0.0.0.0 --port 8000 \
   --n-gpu-layers 999 \
   --ctx-size 65536 \
@@ -190,7 +208,7 @@ else:
     _ports = ["8000/http"]  # no sshd in the slim prebuilt image
 
 POD_CONFIG = {
-    "name": "hauhau-aggressive-llamaserver",
+    "name": POD_NAME,
     "imageName": _image,
     # 48 GB cards in priority order — inventory bounces, so list multiples.
     # A100 80 GB at the end as a more-expensive but usually-available fallback.

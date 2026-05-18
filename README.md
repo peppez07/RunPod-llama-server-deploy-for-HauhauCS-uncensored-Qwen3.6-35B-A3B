@@ -74,28 +74,44 @@ This boots `nvidia/cuda:12.5.1-cudnn-devel-ubuntu22.04`, clones llama.cpp,
 compiles it on the pod (~25 min cold), then runs. SSH on port 22 is
 enabled in this mode for debugging.
 
-## Forking / using your own model
+## Swapping in a different model
 
-The script is generic — only three things are model-specific:
+No fork or file edit needed — `deploy_runpod.py` reads the model from
+env vars. The prebuilt image contains only `llama-server`, so it serves
+any GGUF you can name.
 
-```python
-# deploy_runpod.py
-HF_REPO      = "HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive"
-GGUF_FILE    = f"Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-{QUANT}.gguf"
-MMPROJ_FILE  = "mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf"
+**Multimodal model from Hugging Face:**
+
+```bash
+HF_REPO="unsloth/Qwen3-VL-30B-A3B-Instruct-GGUF" \
+GGUF_FILE="Qwen3-VL-30B-A3B-Instruct-Q6_K.gguf" \
+MMPROJ_FILE="mmproj-Qwen3-VL-30B-A3B-Instruct-F16.gguf" \
+MODEL_ALIAS="qwen3-vl" \
+python3 deploy_runpod.py launch
 ```
 
-Swap those, optionally drop `--mmproj` from the startup script if the
-model is text-only, and you're done. The same image still applies.
+**Text-only model:** set `MMPROJ_FILE=` empty — the script will skip both
+the projector download and the `--mmproj` flag automatically.
 
-If you fork this repo and want your own GHCR image:
+```bash
+HF_REPO="bartowski/Llama-3.3-70B-Instruct-GGUF" \
+GGUF_FILE="Llama-3.3-70B-Instruct-Q4_K_M.gguf" \
+MMPROJ_FILE="" \
+MODEL_ALIAS="llama-3.3-70b" \
+python3 deploy_runpod.py launch
+```
 
-1. Push to your fork — the workflow runs automatically on `main`.
-2. After the first run, go to your packages page and flip
-   `llama-server-cuda` to **public** (Package settings → Danger zone →
-   Change visibility).
-3. Either point `deploy_runpod.py` at your image (edit `PREBUILT_IMAGE`)
-   or set `LLAMA_SERVER_IMAGE=ghcr.io/<you>/llama-server-cuda:latest`.
+Bigger models need a bigger card — bump the `gpuTypeIds` priority list
+in `deploy_runpod.py` (e.g. lead with `NVIDIA A100 80GB PCIe`) if a
+48 GB card won't hold your quant.
+
+If you want your own GHCR image (you're forking and don't want to depend
+on `bobby-beckmann/llama-server-cuda`):
+
+1. Push to your fork — the GHA workflow builds on every commit to `main`.
+2. After the first build, flip `llama-server-cuda` in your packages page
+   to **public** (Package settings → Danger zone → Change visibility).
+3. Run with `LLAMA_SERVER_IMAGE=ghcr.io/<you>/llama-server-cuda:latest python3 deploy_runpod.py launch`.
 
 ## Other clients
 
@@ -128,7 +144,12 @@ docker run -d --name openwebui -p 3000:8080 \
 |-----------------------|----------------------------------------------------|-------------------------------------------------------|
 | `RUNPOD_API_KEY`      | (required)                                         | Auth for the RunPod REST API.                         |
 | `HF_TOKEN`            | (required)                                         | Hugging Face read token; used by the pod to download. |
-| `QUANT`               | `Q6_K_P`                                           | Quant tier; `Q4_K_M`, `Q8_K_P`, etc. also valid.      |
+| `HF_REPO`             | `HauhauCS/Qwen3.6-35B-A3B-Uncensored-...`          | Hugging Face repo to pull the GGUF from.              |
+| `GGUF_FILE`           | `Qwen3.6-35B-A3B-Uncensored-...-{QUANT}.gguf`      | Exact filename inside that repo.                      |
+| `MMPROJ_FILE`         | `mmproj-Qwen3.6-...-f16.gguf`                      | Vision projector filename. Empty = text-only model.   |
+| `MODEL_ALIAS`         | `hauhau-aggressive`                                | `--alias` shown to OpenAI clients as the model id.    |
+| `QUANT`               | `Q6_K_P`                                           | Quant tier; substituted into the default `GGUF_FILE`. |
+| `POD_NAME`            | `<MODEL_ALIAS>-llamaserver`                        | Pod name shown in the RunPod dashboard.               |
 | `BUILD_FROM_SOURCE`   | unset                                              | Set to `1` to compile llama.cpp on the pod instead.   |
 | `LLAMA_SERVER_IMAGE`  | `ghcr.io/bobby-beckmann/llama-server-cuda:latest`  | Override the prebuilt image (e.g. to your fork).      |
 
