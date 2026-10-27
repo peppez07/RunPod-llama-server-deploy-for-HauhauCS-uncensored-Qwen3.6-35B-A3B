@@ -19,14 +19,21 @@ recommendation to install, deploy, or operate them. The presence of a Dockerfile
 deployment script, example configuration, health route, or passing test does
 not mean the project is ready for use.
 
-**End-to-end Docker, GPU inference, and RunPod Serverless operation remain
-unverified in this project's development session.** A previous RunPod source
-build exceeded the platform's 30-minute build limit. The default Dockerfile was
-subsequently changed to use a checksum-verified Prism binary release, but this
-change has not established a successful GPU deployment.
+**One live GPU inference and one RunPod Queue request have been verified; this
+does not establish reliability or production readiness.** On 27 October 2026,
+Prism returned "Hello World" locally, and the experimental queue adapter returned
+the same text through RunPod `/runsync` with status `COMPLETED`.
+The live worker was patched over SSH; replacement workers require an image
+rebuilt from the queue-adapter update. Long-running operation, concurrent load,
+worker replacement, and failure recovery have not been validated.
 
-Fifteen local Python tests passed when the deployment code was last checked.
-Those tests use mocks for model downloads and infrastructure calls. They do not
+A previous RunPod source
+build exceeded the platform's 30-minute build limit. The default Dockerfile was
+subsequently changed to use a checksum-verified Prism binary release.
+
+Twenty-two local Python tests passed when the deployment code was last checked.
+Those tests use mocks for model downloads and infrastructure calls. Separately
+from the limited live checks above, they do not
 prove model quality, hardware compatibility, security, production readiness, or
 successful inference. Validation of the release archive's checksum and library
 dependencies is also not a GPU execution test.
@@ -71,7 +78,14 @@ files, or post them in issues or chat. Runtime secrets are still accessible to
 the infrastructure that receives them. The example token fields are blank
 intentionally.
 
-The optional Serverless configuration relies on RunPod's gateway authentication.
+Serverless supports both HTTP Load Balancer access and a Queue adapter for
+`/run` and `/runsync`. The adapter converts `input.prompt` or `input.messages`
+into a local Prism chat request. It defaults to non-streaming output and disabled
+thinking; `input.enable_thinking=true` opts into reasoning. The worker detects
+RunPod's injected job-take webhook automatically, or uses an explicit
+`RUNPOD_ENDPOINT_TYPE=QUEUE` / `LOAD_BALANCER` override.
+
+The Serverless configuration relies on RunPod's gateway authentication.
 That does not amount to a security assessment of the service. A health check
 only reports a limited readiness condition; it does not establish safe or
 correct model behavior.
@@ -130,3 +144,4 @@ These disclosures describe known limitations; they are not an exhaustive risk
 assessment, a certification, or a substitute for independent evaluation.
 The repository's recommendation remains: **avoid using or deploying this
 project, and do not rely on its outputs.**
+

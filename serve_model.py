@@ -1,13 +1,53 @@
 #!/usr/bin/env python3
 """Authenticate, cache the selected GGUF, and exec Prism llama-server."""
 import os
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 DEFAULT_REPO = "OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-GGUF"
 DEFAULT_REVISION = "5ab50fd49410941a8d4f97912303b1c7d458ffa2"
 DEFAULT_FILE = "Ternary-Bonsai-2-27B-Uncensored-Heretic-PQ2_0.gguf"
+
+
+def queue_enabled(env):
+    mode = env.get("RUNPOD_ENDPOINT_TYPE", "auto").upper()
+    if mode in ("QUEUE", "QB"):
+        return True
+    if mode in ("LOAD_BALANCER", "LB", "HTTP"):
+        return False
+    return "/job-take/" in env.get("RUNPOD_WEBHOOK_GET_JOB", "")
+
+
+def run_queue(command, env):
+    """Supervise Prism and its queue consumer; stop both on shutdown/failure."""
+    children = []
+    def stop(signum, frame):
+        raise SystemExit(128 + signum)
+    previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        children.append(subprocess.Popen(command, env=env))
+        children.append(subprocess.Popen(
+            [sys.executable, str(Path(__file__).with_name("queue_handler.py"))], env=env
+        ))
+        while True:
+            if any(child.poll() is not None for child in children):
+                raise RuntimeError("Prism or the RunPod queue consumer exited")
+            time.sleep(1)
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.terminate()
+        for child in children:
+            try:
+                child.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def server_command(model, env):
@@ -73,6 +113,10 @@ def main():
         if health is not None and health.poll() is not None:
             raise RuntimeError("RunPod health process exited before model startup")
         print(f"Model ready; starting Prism llama-server on port {os.environ.get('PORT', '8000')}", flush=True)
+        if queue_enabled(os.environ):
+            print("RunPod Queue mode: enabling job handler", flush=True)
+            run_queue(command, child_env)
+            return 0
         os.execve(command[0], command, child_env)
     except Exception as exc:
         if health is not None:
