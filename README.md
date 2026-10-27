@@ -1,281 +1,132 @@
-# Ternary Bonsai on Docker and RunPod
+# Experimental Ternary Bonsai / Prism Deployment — Use Is Discouraged
 
-Run [OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-GGUF](https://huggingface.co/OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-GGUF)
-as an OpenAI-compatible API on port 8000.
+> **EXPERIMENTAL — DO NOT USE FOR PRODUCTION OR RELY ON THIS PROJECT.**
+>
+> This repository is an unfinished deployment experiment. Its author recommends
+> avoiding its use. It has not been demonstrated to provide a reliable, secure,
+> or suitable service. Do not deploy it for public access, integrate it into a
+> product, or rely on its outputs for real decisions.
 
-This model needs the [Prism ML fork of llama.cpp](https://github.com/PrismML-Eng/llama.cpp).
-The default Dockerfile installs that fork's official prebuilt CUDA release, including its ternary kernels
-and Hadamard transforms. Stock llama.cpp images and the previous HauhauCS image
-are not suitable substitutes for this model.
+## Purpose and current status
 
-The default file is `Ternary-Bonsai-2-27B-Uncensored-Heretic-PQ2_0.gguf`
-(7,206,168,928 bytes), pinned to model revision
-`5ab50fd49410941a8d4f97912303b1c7d458ffa2`.
-The runtime is pinned to Prism release
-`prism-b10826-c9c34bc` (CUDA 12.8, Linux x86-64).
-Its archive is verified against SHA256
-`e4345c9fed6452701fd511f9837726f39a45bc95fe103b8cae55360562eadf7f`.
-Defaults follow the model card: 32K context, Jinja, medium reasoning,
-temperature 1.0, top-p 0.95, top-k 20. One parallel slot avoids multiplying
-the initial memory requirement. This setup serves text; it does not download a vision projector.
+This repository explores running
+[OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-GGUF](https://huggingface.co/OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-GGUF)
+using [Prism ML's llama.cpp fork](https://github.com/PrismML-Eng/llama.cpp),
+Docker, and RunPod.
 
-## 1. Configure credentials
+The source and configuration are provided as an experimental record, not as a
+recommendation to install, deploy, or operate them. The presence of a Dockerfile,
+deployment script, example configuration, health route, or passing test does
+not mean the project is ready for use.
 
-Download/clone this repository and open a terminal in its root. Copy the example:
+**End-to-end Docker, GPU inference, and RunPod Serverless operation remain
+unverified in this project's development session.** A previous RunPod source
+build exceeded the platform's 30-minute build limit. The default Dockerfile was
+subsequently changed to use a checksum-verified Prism binary release, but this
+change has not established a successful GPU deployment.
 
-```sh
-cp .env.example .env
-```
+Fifteen local Python tests passed when the deployment code was last checked.
+Those tests use mocks for model downloads and infrastructure calls. They do not
+prove model quality, hardware compatibility, security, production readiness, or
+successful inference. Validation of the release archive's checksum and library
+dependencies is also not a GPU execution test.
 
-On Windows PowerShell use `Copy-Item .env.example .env`.
+## Model and output disclosure
 
-Edit `.env` locally:
+The selected model is described by its publisher as an uncensored/Heretic
+variant with reduced safety alignment. This can increase the likelihood of
+harmful, offensive, discriminatory, explicit, misleading, or otherwise
+inappropriate output. The word “uncensored” is a model label, not a guarantee
+about what it will answer or how it will behave.
 
-```dotenv
-HF_TOKEN=hf_your_read_token
-LLAMA_API_KEY=your_long_random_inference_password
-RUNPOD_API_KEY=your_runpod_key
-```
+Prism supplies runtime support for the model's ternary format. It does not
+enable an “uncensored mode” or establish that the model is safe, accurate,
+lawful to use in every setting, or appropriate for any audience.
 
-Create a Hugging Face **read** token at
-[Hugging Face token settings](https://huggingface.co/settings/tokens), with access
-to the model repository. The startup process passes it directly to
-`hf_hub_download(token=...)`; a separate `hf auth login` command is unnecessary.
-It does not save a login token to the model volume.
-Credentials are runtime settings, never Docker build arguments or image layers.
-`.env` is excluded from Git and the Docker build context.
+The model may invent facts, sources, code, instructions, or confident
+explanations. Generated code and commands may be insecure or destructive.
+Outputs must not be treated as trusted instructions or authoritative advice.
+No dependable moderation, factual verification, abuse prevention, or human
+review system is provided by this repository.
 
-`LLAMA_API_KEY` protects inference requests and is separate from the Hugging Face token.
-It is required by the RunPod launcher. Compose binds only to localhost and allows
-it to be empty. `RUNPOD_API_KEY` is only needed by the RunPod launcher and is
-not passed to the inference container.
+Do not use it for medical, legal, financial, employment, education, security,
+or other consequential decisions. Do not expose it to children or unsuspecting
+users. Do not use it to make autonomous changes to systems or accounts.
 
-## 2A. Run Docker locally
+## Security, privacy, and credentials
 
-Prerequisites: a Linux x86-64 NVIDIA GPU host, or Windows with Docker Desktop's
-WSL2 Linux GPU support; an NVIDIA driver compatible with CUDA 12.8;
-Docker Engine/Desktop, Compose **2.30+**, and GPU access configured.
-On Linux install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
-Check GPU access before building:
+This project has not undergone an independent security audit. Authentication,
+network isolation, credential handling, dependency integrity, and failure
+recovery have not been comprehensively assessed.
 
-```sh
-docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
-docker compose up --build -d
-docker compose logs -f llama-server
-```
+Do not submit personal information, confidential material, proprietary data,
+or credentials in prompts. Assume prompts, outputs, request metadata, and
+configuration could be exposed through infrastructure, logs, misconfiguration,
+or software defects. This repository makes no privacy or confidentiality
+guarantee.
 
-The image build downloads the official Prism binary archive instead of compiling CUDA.
-Allow at least 30 GB free locally for the image/cache and model. The first startup downloads
-the model; later startups reuse the named `model-cache` volume. The Hub maintains
-incomplete downloads separately and finalizes them atomically. Invalid GGUF headers
-fail startup instead of loading an error page.
+Hugging Face and RunPod tokens are credentials, not model settings to publish.
+Never commit real tokens, bake them into Docker images, include them in example
+files, or post them in issues or chat. Runtime secrets are still accessible to
+the infrastructure that receives them. The example token fields are blank
+intentionally.
 
-```sh
-curl http://localhost:8000/health
-```
+The optional Serverless configuration relies on RunPod's gateway authentication.
+That does not amount to a security assessment of the service. A health check
+only reports a limited readiness condition; it does not establish safe or
+correct model behavior.
 
-Wait for HTTP 200 and `{"status":"ok"}`. Downloading/loading can take several minutes.
-The browser UI is available at `http://localhost:8000` if the runtime's prebuilt UI
-assets are available. Use your `LLAMA_API_KEY` when prompted.
-To stop without deleting the cache: `docker compose down`.
-`docker compose down -v` also deletes downloaded models.
+## Infrastructure and cost disclosure
 
-The default image uses Prism's published CUDA 12.8 backend, including its CPU fallback libraries.
-The model file size is not total VRAM usage: context, working buffers and runtime
-allocations need additional space. Lower `CTX_SIZE` (for example 8192) or reduce
-`N_GPU_LAYERS` if loading runs out of memory.
-For custom compilation, use `docker build -f Dockerfile.source -t bonsai-source .`
-outside RunPod's GitHub builder. That optional source build targets SM 80/86/89;
-override its `CUDA_ARCHITECTURES` build argument for other supported GPUs.
+Deploying or testing this repository can create billable GPU, storage, image
+build, and network usage. Failed builds, failed inference, startup delays, and
+unhealthy workers may still involve costs. Stopping a client request or waiting
+for a timeout does not necessarily stop the infrastructure or its charges.
 
-## 2B. Build the image and deploy on RunPod
+The Pod launcher requests **150 GB of temporary container disk** by default.
+RunPod Serverless storage must be configured separately in the endpoint console;
+a Dockerfile or environment variable cannot allocate that disk. A repository
+update does not automatically change an existing endpoint's storage settings.
 
-1. Enable Actions in this fork if GitHub shows they are disabled.
-2. Merge the setup changes into `main`, or run **Actions → Build Bonsai Prism CUDA image → Run workflow**
-   on the branch you want to build. Leave release/hash inputs blank to use the pinned binary.
-3. Wait for the workflow to pass. It tests the Python code, builds the image, checks
-   startup fails cleanly without a token, and publishes
-   `ghcr.io/peppez07/bonsai-llama-server-cuda:latest` plus a commit SHA tag.
-   Pull requests build/test without publishing.
-4. Make the GHCR package public in GitHub package settings, or configure a RunPod
-   registry credential and set `CONTAINER_REGISTRY_AUTH_ID` in `.env`.
-   The Hugging Face token authenticates model downloads; GHCR has its own image-pull credentials.
-5. Prefer the published commit SHA tag in `LLAMA_SERVER_IMAGE` for repeatable deployment.
+Temporary files and model caches may disappear when workers or containers are
+removed. Persistent volumes have different lifecycles and may continue to
+incur charges. This project provides no assurance against data loss, duplicate
+resources, unexpected downloads, capacity shortages, or unexpected charges.
 
-With Python **3.10+** installed (no Python packages needed for the launcher):
+If you have already deployed it, review your RunPod account, stop resources you
+do not intend to keep running, and review retained storage and exposed endpoints.
 
-```sh
-python deploy_runpod.py launch --dry-run
-python deploy_runpod.py launch
-python deploy_runpod.py wait POD_ID
-python deploy_runpod.py status POD_ID
-```
+## Dependencies, provenance, and limitations
 
-Use `py -3` instead of `python` on Windows if needed.
-Launching allocates a billable GPU pod. The launcher makes one creation request
-and prints its ID; it does not retry ambiguous failures and risk duplicate pods.
-Check the RunPod console before retrying a failed launch.
+The default experimental configuration references:
 
-The pod uses this project's Docker startup command, exposes `8000/http`,
-and caches models under `/workspace/hf-cache` on a 30 GB volume.
-Temporary container disk defaults to **150 GB**, configurable with `CONTAINER_DISK_GB`.
-RunPod serves the API at:
+- Model file: `Ternary-Bonsai-2-27B-Uncensored-Heretic-PQ2_0.gguf`.
+- Model revision: `5ab50fd49410941a8d4f97912303b1c7d458ffa2`.
+- Prism binary release: `prism-b10826-c9c34bc`, Linux x86-64 / CUDA 12.8.
+- Release archive SHA-256:
+  `e4345c9fed6452701fd511f9837726f39a45bc95fe103b8cae55360562eadf7f`.
 
-```text
-https://POD_ID-8000.proxy.runpod.net/v1
-```
+A checksum confirms agreement with the selected archive digest; it is not a
+security audit or a guarantee of trustworthy behavior. Pinning a version does
+not guarantee compatibility, continued availability, or freedom from defects.
 
-`wait` polls the public `/health` route, returning a nonzero exit code after
-30 minutes if the server is not ready. A timeout does not stop billing.
-Inspect container logs in RunPod for download, driver, or model-load failures.
-Status and dry-run output redact credential fields.
+The project depends on third-party model publishers, runtime maintainers,
+container images, packages, GitHub, Hugging Face, NVIDIA, and RunPod. Their
+software, services, access conditions, and availability can change. No
+affiliation, sponsorship, approval, or endorsement by these parties is implied.
 
-When finished:
+Third-party code and model weights remain subject to their own licenses,
+acceptable-use requirements, and service terms. This notice does not grant
+additional rights to those materials or replace their conditions.
 
-```sh
-python deploy_runpod.py terminate POD_ID
-```
+## No warranty, support commitment, or suitability claim
 
-Termination deletes the pod and its pod-local volume/cache.
-To retain the cache across pod deletion, provision a compatible RunPod network
-volume and set `NETWORK_VOLUME_ID`. Its location constrains available GPUs.
+This experimental material is supplied **as is**, without a promise of
+correctness, availability, compatibility, security, maintenance, or fitness for
+any purpose. No service-level commitment, deployment assistance commitment,
+or guaranteed update schedule is offered.
 
-## 2C. RunPod Serverless from GitHub (Load balancer)
-
-In the GitHub import screen, use:
-
-| Field | Value |
-| --- | --- |
-| Branch | `main` |
-| Dockerfile path | `/Dockerfile.llama-server` |
-| Endpoint type | **Load balancer** |
-| Application HTTP port | `8000` |
-| Health port | `8001` |
-| Temporary storage / Container disk | **150 GB** |
-
-The **Queue** option requires a `runpod.serverless.start()` handler and does not
-match this HTTP server. Select Load balancer; do not add a queue handler.
-The Dockerfile has a custom filename, so the default `/Dockerfile` path will fail.
-
-Set these **runtime** environment variables in RunPod (not build arguments).
-The names/defaults are also declared in the Dockerfile and listed in
-`runpod.env.example`. Docker environment defaults do not guarantee that the
-RunPod console displays editable rows for them; add any missing rows manually.
-
-```dotenv
-HF_TOKEN=hf_your_read_token
-RUNPOD_SERVERLESS=1
-PORT=8000
-PORT_HEALTH=8001
-```
-
-Do not set `LLAMA_API_KEY` for this Serverless setup: RunPod authenticates requests
-at its gateway using your RunPod API key. The separate health service exposes
-`GET /ping` on port 8001, returning 204 while downloading/loading and 200 only
-after llama-server reports the model ready. Application routes stay on port 8000.
-This adapter is enabled only by `RUNPOD_SERVERLESS=1`; Pod/Compose startup remains unchanged.
-
-Set temporary storage / container disk to **150 GB in RunPod**. A Dockerfile or
-environment variable cannot allocate this disk or change an existing endpoint's
-storage setting. If attaching a network volume at
-`/runpod-volume`, also set `HF_HUB_CACHE=/runpod-volume/hf-cache` so workers can
-reuse downloads. Without persistent storage, replacement workers download the
-model again. Allow enough worker initialization time for the first download/load.
-GPU memory still needs to cover both the weights and context/runtime allocations.
-
-Call `https://ENDPOINT_ID.api.runpod.ai/v1/chat/completions` with
-`Authorization: Bearer YOUR_RUNPOD_API_KEY` and the same request JSON below.
-This is different from a Pod proxy URL.
-
-See [RunPod's load-balancing worker contract](https://docs.runpod.io/serverless/load-balancing/build-a-worker).
-The adapter is tested locally; end-to-end Serverless GPU inference still needs
-validation after deployment.
-
-## 3. Send a request
-
-Save the following as `request.json`:
-
-```json
-{
-  "model": "bonsai-heretic",
-  "messages": [{"role": "user", "content": "Explain how a rainbow forms."}],
-  "max_tokens": 512,
-  "stream": false
-}
-```
-
-For local Docker:
-
-```sh
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_LLAMA_API_KEY" \
-  --data-binary @request.json
-```
-
-On Windows use `curl.exe` and put the command on one line.
-For RunPod, replace `http://localhost:8000` with your pod's HTTPS proxy URL.
-Never send the Hugging Face or RunPod token as your inference API password.
-
-## Configuration
-
-All launcher settings are read from `.env`, with exported environment variables
-taking precedence. Use simple `KEY=value` entries, optionally quoted; shell
-substitution and inline comments are not supported. Compose also reads `.env`.
-
-| Setting | Purpose / default |
-| --- | --- |
-| `HF_TOKEN` | Hugging Face read token |
-| `LLAMA_API_KEY` | Your inference API password |
-| `HF_REPO` | OS-Software Bonsai Heretic repository |
-| `HF_REVISION` | Pinned model commit; change alongside the repository/file |
-| `GGUF_FILE` | Exact PQ2_0 filename |
-| `MODEL_ALIAS` | `bonsai-heretic` |
-| `CTX_SIZE` | `32768` |
-| `PARALLEL` | `1` |
-| `N_GPU_LAYERS` | `99`; lower for partial CPU offload |
-| `REASONING_EFFORT` | `medium` |
-| `LLAMA_SERVER_IMAGE` | Your published Prism image (RunPod only) |
-| `GPU_TYPE_IDS` | Comma-separated RunPod GPU types |
-| `VOLUME_GB` | `30` (RunPod only) |
-| `CONTAINER_DISK_GB` | `150` temporary container disk (Pod launcher only; set 150 GB separately in the Serverless console) |
-| `NETWORK_VOLUME_ID` | Optional persistent RunPod network volume |
-| `CONTAINER_REGISTRY_AUTH_ID` | Optional RunPod private registry credential |
-
-For the smaller packing, set
-`GGUF_FILE=Ternary-Bonsai-2-27B-Uncensored-Heretic-PTQ1_0.gguf`.
-It also requires the Prism runtime.
-When using `docker run` directly, the startup supports `HF_TOKEN_FILE` pointing
-to a mounted token file, as an alternative to `HF_TOKEN`.
-The old `QUANT`, `MMPROJ_FILE` and pod-side `BUILD_FROM_SOURCE` paths are replaced
-by exact model filenames and a single Docker build/runtime.
-
-## Validation
-
-### RunPod build timeout
-
-RunPod's GitHub builder limits the Docker build step to 30 minutes.
-Compiling Prism's CUDA kernels can exceed that limit; increasing temporary disk
-does not extend the build timeout. The default `/Dockerfile.llama-server` now
-downloads a checksum-verified official Prism CUDA release and performs no source
-compilation. Keep using that Dockerfile path, then trigger a new build from the
-updated repository. If the endpoint tracks GitHub releases, create a new release
-to deploy the updated commit.
-
-The warning about Git commit information being unavailable on the builder host
-is separate from the CUDA compilation timeout.
-
-```sh
-python -m unittest discover -s tests -v
-python deploy_runpod.py launch --dry-run
-```
-
-Tests use mocked downloads and RunPod calls; they do not allocate GPUs or download
-the 7.2 GB model. The Docker build and GPU inference still need validation on the
-target host. A passing health check proves loading; a successful chat request
-checks generation.
-
-References: [model usage](https://huggingface.co/OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-GGUF#usage),
-[Prism runtime](https://github.com/PrismML-Eng/llama.cpp),
-[Hub downloads](https://huggingface.co/docs/huggingface_hub/package_reference/file_download).
-
+These disclosures describe known limitations; they are not an exhaustive risk
+assessment, a certification, or a substitute for independent evaluation.
+The repository's recommendation remains: **avoid using or deploying this
+project, and do not rely on its outputs.**
