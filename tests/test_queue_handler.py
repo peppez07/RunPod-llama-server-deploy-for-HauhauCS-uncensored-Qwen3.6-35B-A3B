@@ -41,6 +41,32 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(payload["messages"], messages)
         self.assertTrue(payload["chat_template_kwargs"]["enable_thinking"])
 
+    def test_openai_contract_preserves_tools_and_tool_result_messages(self):
+        messages = [{"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+        ]}, {"role": "tool", "tool_call_id": "call_1", "content": "file contents"}]
+        tools = [{"type": "function", "function": {"name": "read", "parameters": {"type": "object"}}}]
+        payload = queue.make_payload({"openai_input": {
+            "messages": messages, "tools": tools, "tool_choice": "auto",
+            "max_completion_tokens": 8192, "stream": True
+        }})
+        self.assertEqual(payload["messages"], messages)
+        self.assertEqual(payload["tools"], tools)
+        self.assertEqual(payload["max_tokens"], 8192)
+        self.assertFalse(payload["stream"])
+
+    def test_openai_tool_response_is_not_reduced_to_text(self):
+        result = {"model": "bonsai-heretic", "choices": [{"index": 0,
+            "message": {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+            ]}, "finish_reason": "tool_calls"}], "usage": {}}
+        response = MagicMock()
+        response.__enter__.return_value = io.BytesIO(json.dumps(result).encode())
+        with patch.object(queue.urllib.request, "urlopen", return_value=response):
+            actual = queue.handler({"input": {"openai_input": {"messages": [
+                {"role": "user", "content": "Read the file"}]}}})
+        self.assertEqual(actual, result)
+
     def test_bad_input_does_not_call_backend(self):
         with patch.object(queue.urllib.request, "urlopen") as request:
             self.assertIn("error", queue.handler({"input": {"prompt": ""}}))

@@ -9,6 +9,11 @@ import urllib.request
 def make_payload(job_input):
     if not isinstance(job_input, dict):
         raise ValueError("input must be an object")
+    # OpenCode/AI SDK requests need tool definitions and complete chat history.
+    if "openai_input" in job_input:
+        job_input = job_input["openai_input"]
+        if not isinstance(job_input, dict):
+            raise ValueError("openai_input must be an object")
     messages = job_input.get("messages")
     if messages is None:
         prompt = job_input.get("prompt")
@@ -20,12 +25,15 @@ def make_payload(job_input):
     payload = {
         "model": os.environ.get("MODEL_ALIAS", "bonsai-heretic"),
         "messages": messages,
-        "max_tokens": job_input.get("max_tokens", 512),
+        "max_tokens": job_input.get("max_tokens", job_input.get("max_completion_tokens", 512)),
         "stream": False,
         # Avoid spending a short simple request's budget on reasoning by default.
         "chat_template_kwargs": {"enable_thinking": bool(job_input.get("enable_thinking", False))},
     }
-    for key in ("temperature", "top_p", "top_k", "seed", "stop", "response_format"):
+    if isinstance(job_input.get("chat_template_kwargs"), dict):
+        payload["chat_template_kwargs"].update(job_input["chat_template_kwargs"])
+    for key in ("temperature", "top_p", "top_k", "seed", "stop", "response_format",
+                "tools", "tool_choice", "parallel_tool_calls", "presence_penalty", "frequency_penalty"):
         if key in job_input:
             payload[key] = job_input[key]
     return payload
@@ -44,6 +52,8 @@ def handler(job):
     try:
         with urllib.request.urlopen(request, timeout=300) as response:
             result = json.load(response)
+        if "openai_input" in job["input"]:
+            return result
         choice = result["choices"][0]
         output = {
             "text": choice["message"].get("content", ""),
