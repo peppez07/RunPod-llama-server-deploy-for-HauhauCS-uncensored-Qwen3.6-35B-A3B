@@ -23,9 +23,13 @@ not mean the project is ready for use.
 does not establish reliability or production readiness.** On 27 October 2026,
 Prism returned "Hello World" locally, and the experimental queue adapter returned
 the same text through RunPod `/runsync` with status `COMPLETED`.
-The live worker was patched over SSH; replacement workers require an image
-rebuilt from the queue-adapter update. Long-running operation, concurrent load,
-worker replacement, and failure recovery have not been validated.
+The live worker was patched over SSH. The endpoint also has a startup override
+that downloads checksum-verified queue-fix scripts from a pinned repository
+commit and installs the pinned RunPod SDK on replacement workers, pending an
+image rebuild. This workaround depends on network/package availability and is
+not a substitute for validation of a rebuilt image. Long-running operation,
+concurrent load, worker replacement, and failure recovery have not been
+comprehensively validated.
 
 A previous RunPod source
 build exceeded the platform's 30-minute build limit. The default Dockerfile was
