@@ -36,8 +36,8 @@ COPY --from=builder /src/llama.cpp/build/bin/ /opt/llama/bin/
 RUN ln -s /opt/llama/bin/llama-server /usr/local/bin/llama-server \
     && echo /opt/llama/bin > /etc/ld.so.conf.d/llama.conf && ldconfig
 WORKDIR /app
-COPY serve_model.py /app/serve_model.py
-EXPOSE 8000
+COPY serve_model.py runpod_health.py /app/
+EXPOSE 8000 8001
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30m --retries=3 \
     CMD curl --fail --silent http://127.0.0.1:8000/health || exit 1
 # No ENTRYPOINT: compatible with RunPod dockerStartCmd.

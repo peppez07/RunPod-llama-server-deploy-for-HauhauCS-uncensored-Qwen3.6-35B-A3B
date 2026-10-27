@@ -135,6 +135,51 @@ Termination deletes the pod and its pod-local volume/cache.
 To retain the cache across pod deletion, provision a compatible RunPod network
 volume and set `NETWORK_VOLUME_ID`. Its location constrains available GPUs.
 
+## 2C. RunPod Serverless from GitHub (Load balancer)
+
+In the GitHub import screen, use:
+
+| Field | Value |
+| --- | --- |
+| Branch | `main` |
+| Dockerfile path | `/Dockerfile.llama-server` |
+| Endpoint type | **Load balancer** |
+| Application HTTP port | `8000` |
+| Health port | `8001` |
+
+The **Queue** option requires a `runpod.serverless.start()` handler and does not
+match this HTTP server. Select Load balancer; do not add a queue handler.
+The Dockerfile has a custom filename, so the default `/Dockerfile` path will fail.
+
+Set these **runtime** environment variables in RunPod (not build arguments):
+
+```dotenv
+HF_TOKEN=hf_your_read_token
+RUNPOD_SERVERLESS=1
+PORT=8000
+PORT_HEALTH=8001
+```
+
+Do not set `LLAMA_API_KEY` for this Serverless setup: RunPod authenticates requests
+at its gateway using your RunPod API key. The separate health service exposes
+`GET /ping` on port 8001, returning 204 while downloading/loading and 200 only
+after llama-server reports the model ready. Application routes stay on port 8000.
+This adapter is enabled only by `RUNPOD_SERVERLESS=1`; Pod/Compose startup remains unchanged.
+
+Choose at least 30 GB container disk space. If attaching a network volume at
+`/runpod-volume`, also set `HF_HUB_CACHE=/runpod-volume/hf-cache` so workers can
+reuse downloads. Without persistent storage, replacement workers download the
+model again. Allow enough worker initialization time for the first download/load.
+GPU memory still needs to cover both the weights and context/runtime allocations.
+
+Call `https://ENDPOINT_ID.api.runpod.ai/v1/chat/completions` with
+`Authorization: Bearer YOUR_RUNPOD_API_KEY` and the same request JSON below.
+This is different from a Pod proxy URL.
+
+See [RunPod's load-balancing worker contract](https://docs.runpod.io/serverless/load-balancing/build-a-worker).
+The adapter is tested locally; end-to-end Serverless GPU inference still needs
+validation after deployment.
+
 ## 3. Send a request
 
 Save the following as `request.json`:
