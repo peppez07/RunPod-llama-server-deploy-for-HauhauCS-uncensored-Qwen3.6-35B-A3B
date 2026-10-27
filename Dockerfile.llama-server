@@ -1,27 +1,10 @@
 # syntax=docker/dockerfile:1.7
-ARG CUDA_VERSION=12.8.1
-ARG UBUNTU_VERSION=24.04
-FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS builder
-ARG LLAMA_CPP_REF=c96baf4abe24d11a50f326e40b6223b687449d63
-# Ampere/Ada (A6000, A100, L40/L40S). Override for other GPUs.
-ARG CUDA_ARCHITECTURES=80;86;89
-ARG BUILD_JOBS=2
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git build-essential cmake ninja-build ca-certificates libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
-WORKDIR /src/llama.cpp
-RUN ln -s /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1 \
-    && echo /usr/local/cuda/lib64/stubs > /etc/ld.so.conf.d/cuda-stubs.conf && ldconfig
-RUN git init && git remote add origin https://github.com/PrismML-Eng/llama.cpp.git \
-    && git fetch --depth 1 origin "${LLAMA_CPP_REF}" && git checkout --detach FETCH_HEAD
-# CI has no GPU: explicit architectures and portable CPU code are essential.
-RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-    -DGGML_CUDA=ON -DGGML_NATIVE=OFF -DBUILD_SHARED_LIBS=ON \
-    -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
-    -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
-    && cmake --build build --parallel "${BUILD_JOBS}" --target llama-server
-
-FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}
+# Use Prism's official CUDA binaries. RunPod's GitHub builder has a 30-minute
+# limit, so compiling hundreds of CUDA objects there is not viable.
+# Optional compilation path: Dockerfile.source (build outside RunPod).
+FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
+ARG PRISM_RELEASE=prism-b10826-c9c34bc
+ARG PRISM_SHA256=e4345c9fed6452701fd511f9837726f39a45bc95fe103b8cae55360562eadf7f
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-venv ca-certificates curl libgomp1 libssl3t64 \
     && rm -rf /var/lib/apt/lists/*
@@ -31,10 +14,32 @@ ENV PATH="/opt/venv/bin:${PATH}" \
     HF_HUB_CACHE=/workspace/hf-cache \
     HF_HUB_DISABLE_TELEMETRY=1 \
     PYTHONUNBUFFERED=1
-# Keep versioned libraries from the SAME fork/build as the executable.
-COPY --from=builder /src/llama.cpp/build/bin/ /opt/llama/bin/
+# Keep every versioned library/backend from the SAME official Prism release.
+RUN curl --fail --location --retry 3 \
+      "https://github.com/PrismML-Eng/llama.cpp/releases/download/${PRISM_RELEASE}/llama-${PRISM_RELEASE}-bin-linux-cuda-12.8-x64.tar.gz" \
+      --output /tmp/prism.tar.gz \
+    && echo "${PRISM_SHA256}  /tmp/prism.tar.gz" | sha256sum --check --strict \
+    && mkdir -p /opt/llama/bin \
+    && tar -xzf /tmp/prism.tar.gz --strip-components=1 -C /opt/llama/bin \
+    && rm /tmp/prism.tar.gz \
+    && test -x /opt/llama/bin/llama-server
 RUN ln -s /opt/llama/bin/llama-server /usr/local/bin/llama-server \
-    && echo /opt/llama/bin > /etc/ld.so.conf.d/llama.conf && ldconfig
+    && echo /opt/llama/bin > /etc/ld.so.conf.d/llama.conf && ldconfig \
+    && /usr/local/bin/llama-server --version
+# Explicit runtime defaults. Keep HF_TOKEN empty; supply it in RunPod.
+# Console environment rows/storage allocation are configured on the endpoint.
+ENV HF_TOKEN="" \
+    RUNPOD_SERVERLESS=0 \
+    PORT=8000 \
+    PORT_HEALTH=8001 \
+    HF_REPO=OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-GGUF \
+    HF_REVISION=5ab50fd49410941a8d4f97912303b1c7d458ffa2 \
+    GGUF_FILE=Ternary-Bonsai-2-27B-Uncensored-Heretic-PQ2_0.gguf \
+    MODEL_ALIAS=bonsai-heretic \
+    CTX_SIZE=32768 \
+    PARALLEL=1 \
+    N_GPU_LAYERS=99 \
+    REASONING_EFFORT=medium
 WORKDIR /app
 COPY serve_model.py runpod_health.py /app/
 EXPOSE 8000 8001

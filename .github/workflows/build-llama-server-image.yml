@@ -6,8 +6,12 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      llama_cpp_ref:
-        description: "PrismML-Eng/llama.cpp commit/tag/branch (blank uses pinned Dockerfile default)"
+      prism_release:
+        description: "Optional Prism release tag (also supply its matching CUDA 12.8 archive SHA256)"
+        required: false
+        default: ""
+      prism_sha256:
+        description: "SHA256 for the selected Prism Linux CUDA 12.8 x64 archive"
         required: false
         default: ""
 
@@ -50,13 +54,21 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Optional runtime ref
+      - name: Optional Prism release
         id: runtime
         env:
-          REF: ${{ inputs.llama_cpp_ref }}
+          RELEASE: ${{ inputs.prism_release }}
+          SHA256: ${{ inputs.prism_sha256 }}
         run: |
-          if [ -n "$REF" ]; then
-            echo "arg=LLAMA_CPP_REF=$REF" >> "$GITHUB_OUTPUT"
+          if [ -n "$RELEASE" ] || [ -n "$SHA256" ]; then
+            [[ "$RELEASE" =~ ^[A-Za-z0-9._-]+$ ]]
+            [[ "$SHA256" =~ ^[A-Fa-f0-9]{64}$ ]]
+            {
+              echo "args<<EOF"
+              echo "PRISM_RELEASE=$RELEASE"
+              echo "PRISM_SHA256=$SHA256"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
           fi
       - name: Build image
         uses: docker/build-push-action@v6
@@ -66,7 +78,7 @@ jobs:
           platforms: linux/amd64
           load: true
           push: false
-          build-args: ${{ steps.runtime.outputs.arg }}
+          build-args: ${{ steps.runtime.outputs.args }}
           tags: |
             ${{ steps.image.outputs.name }}:latest
             ${{ steps.image.outputs.name }}:${{ github.sha }}

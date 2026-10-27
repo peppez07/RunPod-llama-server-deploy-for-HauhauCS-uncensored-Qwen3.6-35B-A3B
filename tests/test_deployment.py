@@ -27,6 +27,8 @@ class DeploymentTests(unittest.TestCase):
     def test_payload_uses_bonsai_image_and_passes_runtime_auth(self):
         config = deploy.pod_config({"HF_TOKEN": "hf-test", "LLAMA_API_KEY": "api-test"})
         self.assertIn("peppez07/bonsai-", config["imageName"])
+        self.assertEqual(config["containerDiskInGb"], 150)
+        self.assertEqual(deploy.pod_config({"CONTAINER_DISK_GB": "180"})["containerDiskInGb"], 180)
         self.assertEqual(config["env"]["HF_TOKEN"], "hf-test")
         self.assertEqual(config["env"]["HF_REVISION"], serve.DEFAULT_REVISION)
         self.assertEqual(config["dockerStartCmd"], ["python3", "/app/serve_model.py"])

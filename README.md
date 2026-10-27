@@ -4,15 +4,17 @@ Run [OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-GGUF](https://huggingfa
 as an OpenAI-compatible API on port 8000.
 
 This model needs the [Prism ML fork of llama.cpp](https://github.com/PrismML-Eng/llama.cpp).
-The Dockerfile builds that fork at a pinned commit, including its ternary kernels
+The default Dockerfile installs that fork's official prebuilt CUDA release, including its ternary kernels
 and Hadamard transforms. Stock llama.cpp images and the previous HauhauCS image
 are not suitable substitutes for this model.
 
 The default file is `Ternary-Bonsai-2-27B-Uncensored-Heretic-PQ2_0.gguf`
 (7,206,168,928 bytes), pinned to model revision
 `5ab50fd49410941a8d4f97912303b1c7d458ffa2`.
-The runtime is pinned to Prism commit
-`c96baf4abe24d11a50f326e40b6223b687449d63`.
+The runtime is pinned to Prism release
+`prism-b10826-c9c34bc` (CUDA 12.8, Linux x86-64).
+Its archive is verified against SHA256
+`e4345c9fed6452701fd511f9837726f39a45bc95fe103b8cae55360562eadf7f`.
 Defaults follow the model card: 32K context, Jinja, medium reasoning,
 temperature 1.0, top-p 0.95, top-k 20. One parallel slot avoids multiplying
 the initial memory requirement. This setup serves text; it does not download a vision projector.
@@ -62,8 +64,8 @@ docker compose up --build -d
 docker compose logs -f llama-server
 ```
 
-The first build compiles the CUDA runtime; allow substantial time and disk space
-(at least 30 GB free for the build/cache and model). The first startup downloads
+The image build downloads the official Prism binary archive instead of compiling CUDA.
+Allow at least 30 GB free locally for the image/cache and model. The first startup downloads
 the model; later startups reuse the named `model-cache` volume. The Hub maintains
 incomplete downloads separately and finalizes them atomically. Invalid GGUF headers
 fail startup instead of loading an error page.
@@ -78,17 +80,19 @@ assets are available. Use your `LLAMA_API_KEY` when prompted.
 To stop without deleting the cache: `docker compose down`.
 `docker compose down -v` also deletes downloaded models.
 
-The default build targets Ampere/Ada GPUs (SM 80/86/89), including A6000/A100/L40S.
+The default image uses Prism's published CUDA 12.8 backend, including its CPU fallback libraries.
 The model file size is not total VRAM usage: context, working buffers and runtime
 allocations need additional space. Lower `CTX_SIZE` (for example 8192) or reduce
 `N_GPU_LAYERS` if loading runs out of memory.
-To support another GPU, rebuild with a matching `CUDA_ARCHITECTURES` argument.
+For custom compilation, use `docker build -f Dockerfile.source -t bonsai-source .`
+outside RunPod's GitHub builder. That optional source build targets SM 80/86/89;
+override its `CUDA_ARCHITECTURES` build argument for other supported GPUs.
 
 ## 2B. Build the image and deploy on RunPod
 
 1. Enable Actions in this fork if GitHub shows they are disabled.
 2. Merge the setup changes into `main`, or run **Actions → Build Bonsai Prism CUDA image → Run workflow**
-   on the branch you want to build. Leave the runtime ref blank to use the pinned commit.
+   on the branch you want to build. Leave release/hash inputs blank to use the pinned binary.
 3. Wait for the workflow to pass. It tests the Python code, builds the image, checks
    startup fails cleanly without a token, and publishes
    `ghcr.io/peppez07/bonsai-llama-server-cuda:latest` plus a commit SHA tag.
@@ -114,6 +118,7 @@ Check the RunPod console before retrying a failed launch.
 
 The pod uses this project's Docker startup command, exposes `8000/http`,
 and caches models under `/workspace/hf-cache` on a 30 GB volume.
+Temporary container disk defaults to **150 GB**, configurable with `CONTAINER_DISK_GB`.
 RunPod serves the API at:
 
 ```text
@@ -146,12 +151,16 @@ In the GitHub import screen, use:
 | Endpoint type | **Load balancer** |
 | Application HTTP port | `8000` |
 | Health port | `8001` |
+| Temporary storage / Container disk | **150 GB** |
 
 The **Queue** option requires a `runpod.serverless.start()` handler and does not
 match this HTTP server. Select Load balancer; do not add a queue handler.
 The Dockerfile has a custom filename, so the default `/Dockerfile` path will fail.
 
-Set these **runtime** environment variables in RunPod (not build arguments):
+Set these **runtime** environment variables in RunPod (not build arguments).
+The names/defaults are also declared in the Dockerfile and listed in
+`runpod.env.example`. Docker environment defaults do not guarantee that the
+RunPod console displays editable rows for them; add any missing rows manually.
 
 ```dotenv
 HF_TOKEN=hf_your_read_token
@@ -166,7 +175,9 @@ at its gateway using your RunPod API key. The separate health service exposes
 after llama-server reports the model ready. Application routes stay on port 8000.
 This adapter is enabled only by `RUNPOD_SERVERLESS=1`; Pod/Compose startup remains unchanged.
 
-Choose at least 30 GB container disk space. If attaching a network volume at
+Set temporary storage / container disk to **150 GB in RunPod**. A Dockerfile or
+environment variable cannot allocate this disk or change an existing endpoint's
+storage setting. If attaching a network volume at
 `/runpod-volume`, also set `HF_HUB_CACHE=/runpod-volume/hf-cache` so workers can
 reuse downloads. Without persistent storage, replacement workers download the
 model again. Allow enough worker initialization time for the first download/load.
@@ -227,6 +238,7 @@ substitution and inline comments are not supported. Compose also reads `.env`.
 | `LLAMA_SERVER_IMAGE` | Your published Prism image (RunPod only) |
 | `GPU_TYPE_IDS` | Comma-separated RunPod GPU types |
 | `VOLUME_GB` | `30` (RunPod only) |
+| `CONTAINER_DISK_GB` | `150` temporary container disk (Pod launcher only; set 150 GB separately in the Serverless console) |
 | `NETWORK_VOLUME_ID` | Optional persistent RunPod network volume |
 | `CONTAINER_REGISTRY_AUTH_ID` | Optional RunPod private registry credential |
 
@@ -239,6 +251,19 @@ The old `QUANT`, `MMPROJ_FILE` and pod-side `BUILD_FROM_SOURCE` paths are replac
 by exact model filenames and a single Docker build/runtime.
 
 ## Validation
+
+### RunPod build timeout
+
+RunPod's GitHub builder limits the Docker build step to 30 minutes.
+Compiling Prism's CUDA kernels can exceed that limit; increasing temporary disk
+does not extend the build timeout. The default `/Dockerfile.llama-server` now
+downloads a checksum-verified official Prism CUDA release and performs no source
+compilation. Keep using that Dockerfile path, then trigger a new build from the
+updated repository. If the endpoint tracks GitHub releases, create a new release
+to deploy the updated commit.
+
+The warning about Git commit information being unavailable on the builder host
+is separate from the CUDA compilation timeout.
 
 ```sh
 python -m unittest discover -s tests -v

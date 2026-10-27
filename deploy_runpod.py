@@ -59,7 +59,7 @@ def pod_config(env):
             "GPU_TYPE_IDS", "NVIDIA RTX A6000,NVIDIA L40S,NVIDIA RTX 6000 Ada Generation"
         ).split(",") if x.strip()],
         "gpuCount": 1,
-        "containerDiskInGb": 20,
+        "containerDiskInGb": int(env.get("CONTAINER_DISK_GB", "150")),
         "volumeInGb": int(env.get("VOLUME_GB", "30")),
         "volumeMountPath": "/workspace",
         "ports": ["8000/http"],
