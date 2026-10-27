@@ -40,6 +40,7 @@ ENV HF_TOKEN="" \
     PARALLEL=1 \
     N_GPU_LAYERS=99 \
     REASONING_EFFORT=medium
+ENV MAX_OUTPUT_TOKENS=8192
 ENV RUNPOD_ENDPOINT_TYPE=auto
 WORKDIR /app
 COPY serve_model.py runpod_health.py queue_handler.py /app/

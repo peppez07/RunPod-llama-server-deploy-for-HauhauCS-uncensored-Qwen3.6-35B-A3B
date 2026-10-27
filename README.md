@@ -35,7 +35,14 @@ A previous RunPod source
 build exceeded the platform's 30-minute build limit. The default Dockerfile was
 subsequently changed to use a checksum-verified Prism binary release.
 
-Twenty-two local Python tests passed when the deployment code was last checked.
+Twenty-seven local Python tests passed when the deployment code was last checked.
+Queue requests without an explicit token limit now default to 8192 output
+tokens, configurable through `MAX_OUTPUT_TOKENS`. Explicit `max_tokens` or
+`max_completion_tokens` values supplied by a client take precedence. A
+`finish_reason` of `length` is exposed as `truncated: true`, with an incomplete
+answer warning; RunPod job status `COMPLETED` alone does not mean the answer
+finished naturally. Finite output budgets, context limits, and timeouts can
+still stop generation. This is not a promise of unlimited or complete answers.
 The verified Queue endpoint uses a 150 GB temporary disk and explicitly named
 runtime configuration fields, mirrored in `runpod.env.example`. Its real
 Hugging Face token remains in RunPod's configuration, not in this repository.

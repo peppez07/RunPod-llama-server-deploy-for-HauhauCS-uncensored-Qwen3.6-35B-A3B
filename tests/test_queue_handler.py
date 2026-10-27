@@ -10,6 +10,33 @@ import serve_model as serve
 
 
 class QueueTests(unittest.TestCase):
+    def test_default_output_budget_and_explicit_client_limit(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(queue.make_payload({"prompt": "Hello"})["max_tokens"], 8192)
+            self.assertEqual(queue.make_payload({"prompt": "Hello", "max_tokens": 512})["max_tokens"], 512)
+        with patch.dict(os.environ, {"MAX_OUTPUT_TOKENS": "4096"}, clear=True):
+            self.assertEqual(queue.make_payload({"prompt": "Hello"})["max_tokens"], 4096)
+
+    def test_invalid_output_budget_is_rejected_before_network_call(self):
+        for value in (0, -1, True, "8192", 1.5):
+            with self.subTest(value=value), patch.object(queue.urllib.request, "urlopen") as request:
+                self.assertIn("error", queue.handler({"input": {"prompt": "Hello", "max_tokens": value}}))
+                request.assert_not_called()
+
+    def test_token_limit_exhaustion_is_explicit_in_queue_output(self):
+        result = {"model": "bonsai-heretic", "choices": [{"index": 0,
+            "message": {"role": "assistant", "content": "unfinished"},
+            "finish_reason": "length"}], "usage": {"completion_tokens": 32}}
+        for body in ({"prompt": "Hello", "max_tokens": 32},
+                     {"openai_input": {"messages": [{"role": "user", "content": "Hello"}],
+                                       "max_tokens": 32}}):
+            response = MagicMock()
+            response.__enter__.return_value = io.BytesIO(json.dumps(result).encode())
+            with self.subTest(body=body), patch.object(queue.urllib.request, "urlopen", return_value=response):
+                output = queue.handler({"input": body})
+            self.assertTrue(output["truncated"])
+            self.assertIn("incomplete", output["warning"])
+
     def test_supervisor_stops_consumer_if_model_server_exits(self):
         server = Mock()
         server.poll.return_value = 1

@@ -22,10 +22,17 @@ def make_payload(job_input):
         messages = [{"role": "user", "content": prompt}]
     if not isinstance(messages, list) or not messages:
         raise ValueError("messages must be a nonempty list")
+    requested_limit = job_input.get("max_tokens")
+    if requested_limit is None:
+        requested_limit = job_input.get("max_completion_tokens")
+    if requested_limit is None:
+        requested_limit = int(os.environ.get("MAX_OUTPUT_TOKENS", "8192"))
+    if type(requested_limit) is not int or requested_limit < 1:
+        raise ValueError("max_tokens must be a positive integer")
     payload = {
         "model": os.environ.get("MODEL_ALIAS", "bonsai-heretic"),
         "messages": messages,
-        "max_tokens": job_input.get("max_tokens", job_input.get("max_completion_tokens", 512)),
+        "max_tokens": requested_limit,
         "stream": False,
         # Avoid spending a short simple request's budget on reasoning by default.
         "chat_template_kwargs": {"enable_thinking": bool(job_input.get("enable_thinking", False))},
@@ -52,15 +59,25 @@ def handler(job):
     try:
         with urllib.request.urlopen(request, timeout=300) as response:
             result = json.load(response)
+        truncated = any(c.get("finish_reason") == "length" for c in result["choices"])
+        warning = ("The output token budget was exhausted. Request a larger max_tokens "
+                   "value or split the task; this answer is incomplete.")
         if "openai_input" in job["input"]:
+            if truncated:
+                result["truncated"] = True
+                result["warning"] = warning
             return result
         choice = result["choices"][0]
         output = {
             "text": choice["message"].get("content", ""),
             "model": result.get("model"),
             "finish_reason": choice.get("finish_reason"),
+            "truncated": truncated,
+            "output_token_limit": payload["max_tokens"],
             "usage": result.get("usage", {}),
         }
+        if truncated:
+            output["warning"] = warning
         if choice["message"].get("reasoning_content"):
             output["reasoning_content"] = choice["message"]["reasoning_content"]
         return output

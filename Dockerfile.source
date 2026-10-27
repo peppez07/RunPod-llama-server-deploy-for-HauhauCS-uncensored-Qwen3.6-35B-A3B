@@ -31,6 +31,7 @@ ENV PATH="/opt/venv/bin:${PATH}" \
     HF_HUB_CACHE=/workspace/hf-cache \
     HF_HUB_DISABLE_TELEMETRY=1 \
     PYTHONUNBUFFERED=1
+ENV MAX_OUTPUT_TOKENS=8192
 # Keep versioned libraries from the SAME fork/build as the executable.
 COPY --from=builder /src/llama.cpp/build/bin/ /opt/llama/bin/
 RUN ln -s /opt/llama/bin/llama-server /usr/local/bin/llama-server \
