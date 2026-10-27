@@ -36,6 +36,9 @@ build exceeded the platform's 30-minute build limit. The default Dockerfile was
 subsequently changed to use a checksum-verified Prism binary release.
 
 Twenty-two local Python tests passed when the deployment code was last checked.
+The verified Queue endpoint uses a 150 GB temporary disk and explicitly named
+runtime configuration fields, mirrored in `runpod.env.example`. Its real
+Hugging Face token remains in RunPod's configuration, not in this repository.
 Those tests use mocks for model downloads and infrastructure calls. Separately
 from the limited live checks above, they do not
 prove model quality, hardware compatibility, security, production readiness, or
