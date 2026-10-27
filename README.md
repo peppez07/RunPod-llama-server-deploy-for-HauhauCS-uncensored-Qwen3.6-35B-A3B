@@ -1,179 +1,211 @@
-# uncensored
+# Ternary Bonsai on Docker and RunPod
 
-Deploy [`HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive`](https://huggingface.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive)
-(or any GGUF model) to a RunPod GPU pod behind an OpenAI-compatible HTTP API.
-Multimodal-ready out of the box.
+Run [OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-GGUF](https://huggingface.co/OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-GGUF)
+as an OpenAI-compatible API on port 8000.
 
-```
-              ┌──────────────────────────────────┐
-              │ Your browser, OpenWebUI, API,    │
-              │ or anything that talks OpenAI v1 │
-              └────────────────┬─────────────────┘
-                               │ https
-                               ▼
-            https://<podId>-8000.proxy.runpod.net/v1
-                               │
-                               ▼
-       ┌───────────────────────────────────────────┐
-       │ RunPod pod · 48 GB VRAM · llama-server    │
-       │   · model + mmproj on /workspace          │
-       └───────────────────────────────────────────┘
-```
+This model needs the [Prism ML fork of llama.cpp](https://github.com/PrismML-Eng/llama.cpp).
+The Dockerfile builds that fork at a pinned commit, including its ternary kernels
+and Hadamard transforms. Stock llama.cpp images and the previous HauhauCS image
+are not suitable substitutes for this model.
 
-## Quick start (~9 min)
+The default file is `Ternary-Bonsai-2-27B-Uncensored-Heretic-PQ2_0.gguf`
+(7,206,168,928 bytes), pinned to model revision
+`5ab50fd49410941a8d4f97912303b1c7d458ffa2`.
+The runtime is pinned to Prism commit
+`c96baf4abe24d11a50f326e40b6223b687449d63`.
+Defaults follow the model card: 32K context, Jinja, medium reasoning,
+temperature 1.0, top-p 0.95, top-k 20. One parallel slot avoids multiplying
+the initial memory requirement. This setup serves text; it does not download a vision projector.
 
-```bash
-git clone https://github.com/bobby-beckmann/uncensored.git
-cd uncensored
-cp .env.example .env             # fill in RUNPOD_API_KEY and HF_TOKEN
-python3 deploy_runpod.py launch  # prints a pod id
-python3 deploy_runpod.py wait <pod_id>
+## 1. Configure credentials
+
+Download/clone this repository and open a terminal in its root. Copy the example:
+
+```sh
+cp .env.example .env
 ```
 
-When `wait` reports `READY`, open `https://<pod_id>-8000.proxy.runpod.net/`
-in a browser for the built-in chat UI (with sampling knobs in the sidebar
-and drag-and-drop image input), or point any OpenAI client at
-`https://<pod_id>-8000.proxy.runpod.net/v1`.
+On Windows PowerShell use `Copy-Item .env.example .env`.
 
-```bash
-python3 deploy_runpod.py terminate <pod_id>   # stop the meter
+Edit `.env` locally:
+
+```dotenv
+HF_TOKEN=hf_your_read_token
+LLAMA_API_KEY=your_long_random_inference_password
+RUNPOD_API_KEY=your_runpod_key
 ```
 
-Cost is roughly **$0.77/hr** on the default GPU (RTX 6000 Ada, 48 GB).
-The `/workspace` volume is destroyed with the pod, so a fresh launch
-re-downloads the model (~6 min over 80 MB/s).
+Create a Hugging Face **read** token at
+[Hugging Face token settings](https://huggingface.co/settings/tokens), with access
+to the model repository. The startup process passes it directly to
+`hf_hub_download(token=...)`; a separate `hf auth login` command is unnecessary.
+It does not save a login token to the model volume.
+Credentials are runtime settings, never Docker build arguments or image layers.
+`.env` is excluded from Git and the Docker build context.
 
-## What you get on the pod
+`LLAMA_API_KEY` protects inference requests and is separate from the Hugging Face token.
+It is required by the RunPod launcher. Compose binds only to localhost and allows
+it to be empty. `RUNPOD_API_KEY` is only needed by the RunPod launcher and is
+not passed to the inference container.
 
-- `llama-server` from llama.cpp, built with CUDA.
-- `Q6_K_P` quant by default (~31 GB on disk). Override: `QUANT=Q4_K_M python3 deploy_runpod.py launch`.
-- `--jinja` chat template (required by this model card).
-- `--mmproj` loaded so vision input works.
-- Built-in chat UI at `/`, OpenAI-compatible API at `/v1`.
-- `--ctx-size 65536` split across `--parallel 4` slots (16 K context per concurrent user; bump in `deploy_runpod.py` if you need more).
+## 2A. Run Docker locally
 
-## How it boots fast
+Prerequisites: a Linux x86-64 NVIDIA GPU host, or Windows with Docker Desktop's
+WSL2 Linux GPU support; an NVIDIA driver compatible with CUDA 12.8;
+Docker Engine/Desktop, Compose **2.30+**, and GPU access configured.
+On Linux install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+Check GPU access before building:
 
-By default the pod pulls a **prebuilt CUDA image** from this repo's
-GitHub Container Registry:
-[`ghcr.io/bobby-beckmann/llama-server-cuda:latest`](https://github.com/bobby-beckmann/uncensored/pkgs/container/llama-server-cuda).
-
-The image is rebuilt automatically on every push to `main` via
-[`.github/workflows/build-llama-server-image.yml`](.github/workflows/build-llama-server-image.yml).
-It bakes only the binary — no model — so the same image works for any
-GGUF you want to swap in.
-
-If you need a fresh build (testing a custom llama.cpp branch, recovering
-from a broken image, etc.), fall back to compiling on the pod:
-
-```bash
-BUILD_FROM_SOURCE=1 python3 deploy_runpod.py launch
+```sh
+docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
+docker compose up --build -d
+docker compose logs -f llama-server
 ```
 
-This boots `nvidia/cuda:12.5.1-cudnn-devel-ubuntu22.04`, clones llama.cpp,
-compiles it on the pod (~25 min cold), then runs. SSH on port 22 is
-enabled in this mode for debugging.
+The first build compiles the CUDA runtime; allow substantial time and disk space
+(at least 30 GB free for the build/cache and model). The first startup downloads
+the model; later startups reuse the named `model-cache` volume. The Hub maintains
+incomplete downloads separately and finalizes them atomically. Invalid GGUF headers
+fail startup instead of loading an error page.
 
-## Swapping in a different model
-
-No fork or file edit needed — `deploy_runpod.py` reads the model from
-env vars. The prebuilt image contains only `llama-server`, so it serves
-any GGUF you can name.
-
-**Multimodal model from Hugging Face:**
-
-```bash
-HF_REPO="unsloth/Qwen3-VL-30B-A3B-Instruct-GGUF" \
-GGUF_FILE="Qwen3-VL-30B-A3B-Instruct-Q6_K.gguf" \
-MMPROJ_FILE="mmproj-Qwen3-VL-30B-A3B-Instruct-F16.gguf" \
-MODEL_ALIAS="qwen3-vl" \
-python3 deploy_runpod.py launch
+```sh
+curl http://localhost:8000/health
 ```
 
-**Text-only model:** set `MMPROJ_FILE=` empty — the script will skip both
-the projector download and the `--mmproj` flag automatically.
+Wait for HTTP 200 and `{"status":"ok"}`. Downloading/loading can take several minutes.
+The browser UI is available at `http://localhost:8000` if the runtime's prebuilt UI
+assets are available. Use your `LLAMA_API_KEY` when prompted.
+To stop without deleting the cache: `docker compose down`.
+`docker compose down -v` also deletes downloaded models.
 
-```bash
-HF_REPO="bartowski/Llama-3.3-70B-Instruct-GGUF" \
-GGUF_FILE="Llama-3.3-70B-Instruct-Q4_K_M.gguf" \
-MMPROJ_FILE="" \
-MODEL_ALIAS="llama-3.3-70b" \
-python3 deploy_runpod.py launch
+The default build targets Ampere/Ada GPUs (SM 80/86/89), including A6000/A100/L40S.
+The model file size is not total VRAM usage: context, working buffers and runtime
+allocations need additional space. Lower `CTX_SIZE` (for example 8192) or reduce
+`N_GPU_LAYERS` if loading runs out of memory.
+To support another GPU, rebuild with a matching `CUDA_ARCHITECTURES` argument.
+
+## 2B. Build the image and deploy on RunPod
+
+1. Enable Actions in this fork if GitHub shows they are disabled.
+2. Merge the setup changes into `main`, or run **Actions → Build Bonsai Prism CUDA image → Run workflow**
+   on the branch you want to build. Leave the runtime ref blank to use the pinned commit.
+3. Wait for the workflow to pass. It tests the Python code, builds the image, checks
+   startup fails cleanly without a token, and publishes
+   `ghcr.io/peppez07/bonsai-llama-server-cuda:latest` plus a commit SHA tag.
+   Pull requests build/test without publishing.
+4. Make the GHCR package public in GitHub package settings, or configure a RunPod
+   registry credential and set `CONTAINER_REGISTRY_AUTH_ID` in `.env`.
+   The Hugging Face token authenticates model downloads; GHCR has its own image-pull credentials.
+5. Prefer the published commit SHA tag in `LLAMA_SERVER_IMAGE` for repeatable deployment.
+
+With Python **3.10+** installed (no Python packages needed for the launcher):
+
+```sh
+python deploy_runpod.py launch --dry-run
+python deploy_runpod.py launch
+python deploy_runpod.py wait POD_ID
+python deploy_runpod.py status POD_ID
 ```
 
-Bigger models need a bigger card — bump the `gpuTypeIds` priority list
-in `deploy_runpod.py` (e.g. lead with `NVIDIA A100 80GB PCIe`) if a
-48 GB card won't hold your quant.
+Use `py -3` instead of `python` on Windows if needed.
+Launching allocates a billable GPU pod. The launcher makes one creation request
+and prints its ID; it does not retry ambiguous failures and risk duplicate pods.
+Check the RunPod console before retrying a failed launch.
 
-If you want your own GHCR image (you're forking and don't want to depend
-on `bobby-beckmann/llama-server-cuda`):
+The pod uses this project's Docker startup command, exposes `8000/http`,
+and caches models under `/workspace/hf-cache` on a 30 GB volume.
+RunPod serves the API at:
 
-1. Push to your fork — the GHA workflow builds on every commit to `main`.
-2. After the first build, flip `llama-server-cuda` in your packages page
-   to **public** (Package settings → Danger zone → Change visibility).
-3. Run with `LLAMA_SERVER_IMAGE=ghcr.io/<you>/llama-server-cuda:latest python3 deploy_runpod.py launch`.
-
-## Other clients
-
-```python
-from openai import OpenAI
-client = OpenAI(
-    base_url="https://<pod_id>-8000.proxy.runpod.net/v1",
-    api_key="not-needed",
-)
-r = client.chat.completions.create(
-    model="hauhau-aggressive",
-    messages=[{"role": "user", "content": "hi"}],
-)
-print(r.choices[0].message.content)
+```text
+https://POD_ID-8000.proxy.runpod.net/v1
 ```
 
-[Open WebUI](https://github.com/open-webui/open-webui) on your laptop:
+`wait` polls the public `/health` route, returning a nonzero exit code after
+30 minutes if the server is not ready. A timeout does not stop billing.
+Inspect container logs in RunPod for download, driver, or model-load failures.
+Status and dry-run output redact credential fields.
 
-```bash
-docker run -d --name openwebui -p 3000:8080 \
-  -e OPENAI_API_BASE_URL=https://<pod_id>-8000.proxy.runpod.net/v1 \
-  -e OPENAI_API_KEY=anything \
-  -v openwebui:/app/backend/data \
-  ghcr.io/open-webui/open-webui:main
+When finished:
+
+```sh
+python deploy_runpod.py terminate POD_ID
 ```
 
-## Knobs
+Termination deletes the pod and its pod-local volume/cache.
+To retain the cache across pod deletion, provision a compatible RunPod network
+volume and set `NETWORK_VOLUME_ID`. Its location constrains available GPUs.
 
-| Env var               | Default                                            | What it does                                          |
-|-----------------------|----------------------------------------------------|-------------------------------------------------------|
-| `RUNPOD_API_KEY`      | (required)                                         | Auth for the RunPod REST API.                         |
-| `HF_TOKEN`            | (required)                                         | Hugging Face read token; used by the pod to download. |
-| `HF_REPO`             | `HauhauCS/Qwen3.6-35B-A3B-Uncensored-...`          | Hugging Face repo to pull the GGUF from.              |
-| `GGUF_FILE`           | `Qwen3.6-35B-A3B-Uncensored-...-{QUANT}.gguf`      | Exact filename inside that repo.                      |
-| `MMPROJ_FILE`         | `mmproj-Qwen3.6-...-f16.gguf`                      | Vision projector filename. Empty = text-only model.   |
-| `MODEL_ALIAS`         | `hauhau-aggressive`                                | `--alias` shown to OpenAI clients as the model id.    |
-| `QUANT`               | `Q6_K_P`                                           | Quant tier; substituted into the default `GGUF_FILE`. |
-| `POD_NAME`            | `<MODEL_ALIAS>-llamaserver`                        | Pod name shown in the RunPod dashboard.               |
-| `BUILD_FROM_SOURCE`   | unset                                              | Set to `1` to compile llama.cpp on the pod instead.   |
-| `LLAMA_SERVER_IMAGE`  | `ghcr.io/bobby-beckmann/llama-server-cuda:latest`  | Override the prebuilt image (e.g. to your fork).      |
+## 3. Send a request
 
-## Quirks worth knowing
+Save the following as `request.json`:
 
-- **Thinking mode is on by default.** Responses stream the model's
-  reasoning to `delta.reasoning_content`, then the final answer to
-  `delta.content`. A client that only consumes `content` will see empty
-  deltas for a second or two. Prepend `/no_think` to disable per-turn,
-  or pass `enable_thinking=false` via the chat template extension.
-- **Image input.** The built-in UI accepts drag-and-drop and encodes as
-  a base64 data URL. HTTPS image URLs work only on the prebuilt-image
-  path (llama.cpp's embedded CURL needs OpenSSL, which the prebuilt
-  Dockerfile installs but the source-build apt block doesn't).
-- **Inventory bounces.** RunPod can be momentarily out of any given GPU.
-  `deploy_runpod.py launch` has a built-in retry loop that submits
-  every 10 s until a machine sticks, falling through the priority list
-  RTX 6000 Ada → L40S → A6000 → L40 → A100.
+```json
+{
+  "model": "bonsai-heretic",
+  "messages": [{"role": "user", "content": "Explain how a rainbow forms."}],
+  "max_tokens": 512,
+  "stream": false
+}
+```
 
-## Layout
+For local Docker:
 
-| Path                                              | What it is                                                |
-|---------------------------------------------------|-----------------------------------------------------------|
-| `deploy_runpod.py`                                | Pod lifecycle: `launch`, `status`, `wait`, `terminate`.   |
-| `Dockerfile.llama-server`                         | Multi-stage CUDA build of `llama-server`.                 |
-| `.github/workflows/build-llama-server-image.yml`  | Builds and pushes the image on every commit to `main`.    |
-| `.env.example`                                    | Template — copy to `.env` and fill in.                    |
+```sh
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_LLAMA_API_KEY" \
+  --data-binary @request.json
+```
+
+On Windows use `curl.exe` and put the command on one line.
+For RunPod, replace `http://localhost:8000` with your pod's HTTPS proxy URL.
+Never send the Hugging Face or RunPod token as your inference API password.
+
+## Configuration
+
+All launcher settings are read from `.env`, with exported environment variables
+taking precedence. Use simple `KEY=value` entries, optionally quoted; shell
+substitution and inline comments are not supported. Compose also reads `.env`.
+
+| Setting | Purpose / default |
+| --- | --- |
+| `HF_TOKEN` | Hugging Face read token |
+| `LLAMA_API_KEY` | Your inference API password |
+| `HF_REPO` | OS-Software Bonsai Heretic repository |
+| `HF_REVISION` | Pinned model commit; change alongside the repository/file |
+| `GGUF_FILE` | Exact PQ2_0 filename |
+| `MODEL_ALIAS` | `bonsai-heretic` |
+| `CTX_SIZE` | `32768` |
+| `PARALLEL` | `1` |
+| `N_GPU_LAYERS` | `99`; lower for partial CPU offload |
+| `REASONING_EFFORT` | `medium` |
+| `LLAMA_SERVER_IMAGE` | Your published Prism image (RunPod only) |
+| `GPU_TYPE_IDS` | Comma-separated RunPod GPU types |
+| `VOLUME_GB` | `30` (RunPod only) |
+| `NETWORK_VOLUME_ID` | Optional persistent RunPod network volume |
+| `CONTAINER_REGISTRY_AUTH_ID` | Optional RunPod private registry credential |
+
+For the smaller packing, set
+`GGUF_FILE=Ternary-Bonsai-2-27B-Uncensored-Heretic-PTQ1_0.gguf`.
+It also requires the Prism runtime.
+When using `docker run` directly, the startup supports `HF_TOKEN_FILE` pointing
+to a mounted token file, as an alternative to `HF_TOKEN`.
+The old `QUANT`, `MMPROJ_FILE` and pod-side `BUILD_FROM_SOURCE` paths are replaced
+by exact model filenames and a single Docker build/runtime.
+
+## Validation
+
+```sh
+python -m unittest discover -s tests -v
+python deploy_runpod.py launch --dry-run
+```
+
+Tests use mocked downloads and RunPod calls; they do not allocate GPUs or download
+the 7.2 GB model. The Docker build and GPU inference still need validation on the
+target host. A passing health check proves loading; a successful chat request
+checks generation.
+
+References: [model usage](https://huggingface.co/OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-GGUF#usage),
+[Prism runtime](https://github.com/PrismML-Eng/llama.cpp),
+[Hub downloads](https://huggingface.co/docs/huggingface_hub/package_reference/file_download).
+

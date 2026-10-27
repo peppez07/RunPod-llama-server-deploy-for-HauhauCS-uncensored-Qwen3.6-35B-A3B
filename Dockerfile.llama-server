@@ -1,55 +1,45 @@
 # syntax=docker/dockerfile:1.7
-# Build llama-server (llama.cpp) with CUDA support. Multi-stage so the runtime
-# image only carries the binary + shared libs needed at execution time.
-#
-# Built and pushed by .github/workflows/build-llama-server-image.yml on every
-# push to main. Tagged :latest and with the git SHA.
-
-ARG CUDA_VERSION=12.5.1
-ARG UBUNTU_VERSION=22.04
-
-# ---- builder ---------------------------------------------------------------
-FROM nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu${UBUNTU_VERSION} AS builder
-
-ARG LLAMA_CPP_REF=master
-
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update -qq && apt-get install -y --no-install-recommends \
-      git build-essential cmake ca-certificates \
-      libcurl4-openssl-dev libssl-dev \
+ARG CUDA_VERSION=12.8.1
+ARG UBUNTU_VERSION=24.04
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS builder
+ARG LLAMA_CPP_REF=c96baf4abe24d11a50f326e40b6223b687449d63
+# Ampere/Ada (A6000, A100, L40/L40S). Override for other GPUs.
+ARG CUDA_ARCHITECTURES=80;86;89
+ARG BUILD_JOBS=2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git build-essential cmake ninja-build ca-certificates libssl-dev \
     && rm -rf /var/lib/apt/lists/*
-
-# Provide libcuda.so.1 for the linker. On a real GPU host the NVIDIA Container
-# Toolkit bind-mounts the real driver library at runtime, but at build time
-# (especially on a CPU-only CI runner) we have to satisfy the link step with
-# the stub shipped in the devel image. Symlink it under the standard search
-# path and re-run ldconfig.
-RUN ln -sf /usr/local/cuda/lib64/stubs/libcuda.so \
-           /usr/local/cuda/lib64/stubs/libcuda.so.1 \
- && echo /usr/local/cuda/lib64/stubs > /etc/ld.so.conf.d/cuda-stubs.conf \
- && ldconfig
-
-WORKDIR /src
-RUN git clone --depth 1 --branch "${LLAMA_CPP_REF}" \
-      https://github.com/ggml-org/llama.cpp.git
-
 WORKDIR /src/llama.cpp
-RUN cmake -B build -DGGML_CUDA=ON -DLLAMA_CURL=ON \
- && cmake --build build --config Release -j"$(nproc)" --target llama-server
+RUN ln -s /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1 \
+    && echo /usr/local/cuda/lib64/stubs > /etc/ld.so.conf.d/cuda-stubs.conf && ldconfig
+RUN git init && git remote add origin https://github.com/PrismML-Eng/llama.cpp.git \
+    && git fetch --depth 1 origin "${LLAMA_CPP_REF}" && git checkout --detach FETCH_HEAD
+# CI has no GPU: explicit architectures and portable CPU code are essential.
+RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DGGML_CUDA=ON -DGGML_NATIVE=OFF -DBUILD_SHARED_LIBS=ON \
+    -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
+    -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
+    && cmake --build build --parallel "${BUILD_JOBS}" --target llama-server
 
-# ---- runtime ---------------------------------------------------------------
-FROM nvidia/cuda:${CUDA_VERSION}-cudnn-runtime-ubuntu${UBUNTU_VERSION}
-
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update -qq && apt-get install -y --no-install-recommends \
-      curl ca-certificates libcurl4 libgomp1 openssl libssl3 \
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-venv ca-certificates curl libgomp1 libssl3t64 \
     && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir huggingface_hub==1.0.1
+ENV PATH="/opt/venv/bin:${PATH}" \
+    HF_HUB_CACHE=/workspace/hf-cache \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    PYTHONUNBUFFERED=1
+# Keep versioned libraries from the SAME fork/build as the executable.
+COPY --from=builder /src/llama.cpp/build/bin/ /opt/llama/bin/
+RUN ln -s /opt/llama/bin/llama-server /usr/local/bin/llama-server \
+    && echo /opt/llama/bin > /etc/ld.so.conf.d/llama.conf && ldconfig
+WORKDIR /app
+COPY serve_model.py /app/serve_model.py
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30m --retries=3 \
+    CMD curl --fail --silent http://127.0.0.1:8000/health || exit 1
+# No ENTRYPOINT: compatible with RunPod dockerStartCmd.
+CMD ["python3", "/app/serve_model.py"]
 
-COPY --from=builder /src/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
-COPY --from=builder /src/llama.cpp/build/bin/lib*.so /usr/local/lib/
-RUN ldconfig
-
-# No ENTRYPOINT — RunPod's dockerStartCmd replaces CMD cleanly, and a bash
-# wrapper can still pre-flight (download model, etc.) before exec'ing the
-# binary. The default CMD just prints help so a bare `docker run` is harmless.
-CMD ["llama-server", "--help"]

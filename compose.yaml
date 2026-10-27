@@ -1,0 +1,25 @@
+services:
+  llama-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.llama-server
+    image: bonsai-llama-server:local
+    gpus: all
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN:?Set HF_TOKEN in .env}
+      HF_REPO: ${HF_REPO:-OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-GGUF}
+      HF_REVISION: ${HF_REVISION:-5ab50fd49410941a8d4f97912303b1c7d458ffa2}
+      GGUF_FILE: ${GGUF_FILE:-Ternary-Bonsai-2-27B-Uncensored-Heretic-PQ2_0.gguf}
+      MODEL_ALIAS: ${MODEL_ALIAS:-bonsai-heretic}
+      CTX_SIZE: ${CTX_SIZE:-32768}
+      PARALLEL: ${PARALLEL:-1}
+      N_GPU_LAYERS: ${N_GPU_LAYERS:-99}
+      REASONING_EFFORT: ${REASONING_EFFORT:-medium}
+      LLAMA_API_KEY: ${LLAMA_API_KEY:-}
+    volumes:
+      - model-cache:/workspace
+    init: true
+volumes:
+  model-cache:
